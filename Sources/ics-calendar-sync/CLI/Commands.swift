@@ -17,6 +17,7 @@ struct ICSCalendarSync: AsyncParsableCommand {
             StatusCommand.self,
             StartCommand.self,
             StopCommand.self,
+            LogsCommand.self,
             ValidateCommand.self,
             ListCommand.self,
             CalendarsCommand.self,
@@ -570,6 +571,171 @@ struct UninstallCommand: AsyncParsableCommand {
         global.configureLogger()
 
         try LaunchdGenerator.uninstall()
+    }
+}
+
+// MARK: - Logs Command
+
+struct LogsCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "logs",
+        abstract: "View application logs"
+    )
+
+    @OptionGroup var global: GlobalOptions
+
+    @Flag(name: [.short, .long], help: "Follow logs in realtime (like tail -f)")
+    var follow: Bool = false
+
+    @Option(name: [.short, .customLong("lines")], help: "Number of lines to show (default: 50)")
+    var lines: Int = 50
+
+    @Flag(name: .long, help: "Show only stdout logs")
+    var stdout: Bool = false
+
+    @Flag(name: .long, help: "Show only stderr logs")
+    var stderr: Bool = false
+
+    @Flag(name: .long, help: "Clear logs before viewing")
+    var clear: Bool = false
+
+    private var logDir: String {
+        LaunchdGenerator.defaultLogDir
+    }
+
+    private var stdoutPath: String {
+        "\(logDir)/stdout.log"
+    }
+
+    private var stderrPath: String {
+        "\(logDir)/stderr.log"
+    }
+
+    mutating func run() async throws {
+        global.configureLogger()
+        let logger = Logger.shared
+
+        // Ensure log directory exists
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: logDir) {
+            try fm.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+            logger.info("Created log directory: \(logDir)")
+        }
+
+        // Ensure log files exist
+        if !fm.fileExists(atPath: stdoutPath) {
+            fm.createFile(atPath: stdoutPath, contents: nil)
+        }
+        if !fm.fileExists(atPath: stderrPath) {
+            fm.createFile(atPath: stderrPath, contents: nil)
+        }
+
+        // Handle clear flag
+        if clear {
+            try clearLogs()
+            logger.success("Logs cleared")
+            if !follow {
+                return
+            }
+        }
+
+        // Determine which logs to show
+        let showStdout = !stderr || stdout
+        let showStderr = !stdout || stderr
+
+        if follow {
+            try await followLogs(showStdout: showStdout, showStderr: showStderr)
+        } else {
+            try showLogs(showStdout: showStdout, showStderr: showStderr)
+        }
+    }
+
+    private func clearLogs() throws {
+        let fm = FileManager.default
+
+        if fm.fileExists(atPath: stdoutPath) {
+            try "".write(toFile: stdoutPath, atomically: true, encoding: .utf8)
+        }
+        if fm.fileExists(atPath: stderrPath) {
+            try "".write(toFile: stderrPath, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private func showLogs(showStdout: Bool, showStderr: Bool) throws {
+        let fm = FileManager.default
+
+        if showStdout && fm.fileExists(atPath: stdoutPath) {
+            let content = try String(contentsOfFile: stdoutPath, encoding: .utf8)
+            let logLines = content.components(separatedBy: .newlines)
+            let lastLines = logLines.suffix(lines).joined(separator: "\n")
+
+            if !lastLines.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if showStderr {
+                    print("=== stdout.log ===")
+                }
+                print(lastLines)
+            }
+        }
+
+        if showStderr && fm.fileExists(atPath: stderrPath) {
+            let content = try String(contentsOfFile: stderrPath, encoding: .utf8)
+            let logLines = content.components(separatedBy: .newlines)
+            let lastLines = logLines.suffix(lines).joined(separator: "\n")
+
+            if !lastLines.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if showStdout {
+                    print("\n=== stderr.log ===")
+                }
+                print(lastLines)
+            }
+        }
+
+        // Check if both files are empty or don't exist
+        let stdoutExists = fm.fileExists(atPath: stdoutPath)
+        let stderrExists = fm.fileExists(atPath: stderrPath)
+
+        if !stdoutExists && !stderrExists {
+            print("No log files found. The service may not have run yet.")
+        } else {
+            let stdoutEmpty = (try? String(contentsOfFile: stdoutPath, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
+            let stderrEmpty = (try? String(contentsOfFile: stderrPath, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
+
+            if stdoutEmpty && stderrEmpty {
+                print("Log files are empty. The service may not have run yet.")
+            }
+        }
+    }
+
+    private func followLogs(showStdout: Bool, showStderr: Bool) async throws {
+        print("Following logs... (Press Ctrl+C to stop)")
+        print()
+
+        // Build tail command
+        var files: [String] = []
+        if showStdout { files.append(stdoutPath) }
+        if showStderr { files.append(stderrPath) }
+
+        // Use tail -f to follow logs
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tail")
+        process.arguments = ["-f", "-n", String(lines)] + files
+
+        // Forward output directly to stdout
+        process.standardOutput = FileHandle.standardOutput
+        process.standardError = FileHandle.standardError
+
+        // Handle Ctrl+C gracefully
+        let signalSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        signal(SIGINT, SIG_IGN)
+        signalSource.setEventHandler {
+            process.terminate()
+            print("\nStopped following logs.")
+            Darwin.exit(0)
+        }
+        signalSource.resume()
+
+        try process.run()
+        process.waitUntilExit()
     }
 }
 
