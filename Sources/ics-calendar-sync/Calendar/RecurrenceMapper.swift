@@ -272,7 +272,6 @@ extension RecurrenceMapper {
         case .thursday: dayStr = "TH"
         case .friday: dayStr = "FR"
         case .saturday: dayStr = "SA"
-        @unknown default: dayStr = "MO"
         }
 
         if day.weekNumber != 0 {

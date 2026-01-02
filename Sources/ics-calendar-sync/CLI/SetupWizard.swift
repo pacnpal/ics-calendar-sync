@@ -48,13 +48,16 @@ actor SetupWizard {
         // Step 6: Configure scheduling
         await configureScheduling()
 
-        // Step 7: Review and save
+        // Step 7: Configure notifications
+        await configureNotifications()
+
+        // Step 8: Review and save
         try await reviewAndSave()
 
-        // Step 8: Initial sync
+        // Step 9: Initial sync
         try await runInitialSync()
 
-        // Step 9: Completion
+        // Step 10: Completion
         printCompletion()
     }
 
@@ -385,6 +388,51 @@ actor SetupWizard {
         print()
     }
 
+    // MARK: - Notifications
+
+    private func configureNotifications() async {
+        printSection("Notifications")
+
+        print("Would you like to receive macOS notifications for sync events?")
+        print("(Useful for monitoring sync status when running in background)")
+        print()
+
+        let enableNotifications = promptYesNo("Enable notifications?", defaultValue: true)
+
+        if enableNotifications {
+            config.notifications.enabled = true
+
+            print()
+            print("When should notifications be shown?")
+            print()
+
+            // Success notifications
+            print("Notify on successful sync? (Shows event counts)")
+            config.notifications.onSuccess = promptYesNo("  Sync success", defaultValue: false)
+
+            // Failure notifications
+            print("Notify when sync fails? (Shows error message)")
+            config.notifications.onFailure = promptYesNo("  Sync failure", defaultValue: true)
+
+            // Partial notifications
+            print("Notify on partial sync? (Some events failed)")
+            config.notifications.onPartial = promptYesNo("  Partial sync", defaultValue: true)
+
+            // Sound
+            print()
+            print("Play sound with notifications?")
+            let useSound = promptYesNo("Enable notification sound?", defaultValue: true)
+            config.notifications.sound = useSound ? "default" : nil
+
+            print()
+            printSuccess("Notifications configured")
+        } else {
+            config.notifications.enabled = false
+        }
+
+        print()
+    }
+
     // MARK: - Review and Save
 
     private func reviewAndSave() async throws {
@@ -401,6 +449,19 @@ actor SetupWizard {
         }
 
         print("Sync Interval:    \(config.daemon.intervalMinutes) minutes")
+
+        // Notification summary
+        if config.notifications.enabled {
+            var triggers: [String] = []
+            if config.notifications.onSuccess { triggers.append("success") }
+            if config.notifications.onFailure { triggers.append("failure") }
+            if config.notifications.onPartial { triggers.append("partial") }
+            let triggerStr = triggers.isEmpty ? "none" : triggers.joined(separator: ", ")
+            print("Notifications:    \(triggerStr)\(config.notifications.sound != nil ? " (with sound)" : "")")
+        } else {
+            print("Notifications:    Disabled")
+        }
+
         print()
         print("Config File:      \(configPath.expandingTildeInPath)")
         print()

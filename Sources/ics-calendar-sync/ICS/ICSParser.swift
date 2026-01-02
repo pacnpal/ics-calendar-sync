@@ -18,7 +18,6 @@ actor ICSParser {
         var events: [ICSEvent] = []
         var currentEventLines: [String] = []
         var inEvent = false
-        var inAlarm = false
 
         for line in unfoldedContent.components(separatedBy: .newlines) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -42,18 +41,12 @@ actor ICSParser {
                     }
                 }
                 inEvent = false
-                inAlarm = false
                 currentEventLines = []
                 continue
             }
 
             if inEvent {
-                // Track alarm boundaries but include lines for parsing
-                if trimmed == "BEGIN:VALARM" {
-                    inAlarm = true
-                } else if trimmed == "END:VALARM" {
-                    inAlarm = false
-                }
+                // Include all lines (including alarm boundaries) for parsing
                 currentEventLines.append(line)
             }
         }

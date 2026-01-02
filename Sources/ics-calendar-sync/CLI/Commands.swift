@@ -8,9 +8,10 @@ struct ICSCalendarSync: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ics-calendar-sync",
         abstract: "Sync ICS calendar subscriptions to macOS Calendar",
-        version: "1.0.0",
+        version: "1.0.2",
         subcommands: [
             SetupCommand.self,
+            ConfigureCommand.self,
             SyncCommand.self,
             DaemonCommand.self,
             StatusCommand.self,
@@ -540,5 +541,292 @@ struct SetupCommand: AsyncParsableCommand {
             let result = try await engine.sync()
             logger.success("Initial sync complete: \(result.created) events created")
         }
+    }
+}
+
+// MARK: - Configure Command
+
+struct ConfigureCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "configure",
+        abstract: "Interactively modify configuration settings"
+    )
+
+    @OptionGroup var global: GlobalOptions
+
+    // ANSI colors
+    private var useColors: Bool { isatty(STDOUT_FILENO) != 0 }
+    private var bold: String { useColors ? "\u{001B}[1m" : "" }
+    private var green: String { useColors ? "\u{001B}[32m" : "" }
+    private var yellow: String { useColors ? "\u{001B}[33m" : "" }
+    private var cyan: String { useColors ? "\u{001B}[36m" : "" }
+    private var reset: String { useColors ? "\u{001B}[0m" : "" }
+
+    mutating func run() async throws {
+        global.configureLogger()
+        let logger = Logger.shared
+
+        // Load existing configuration
+        let configManager = ConfigurationManager.shared
+        var config: Configuration
+
+        let configPath = global.configPath.expandingTildeInPath
+        if FileManager.default.fileExists(atPath: configPath) {
+            config = try await configManager.load(from: global.configPath)
+        } else {
+            logger.error("No configuration found at \(configPath)")
+            logger.info("Run 'ics-calendar-sync setup' first to create a configuration")
+            throw ExitCode.failure
+        }
+
+        var hasChanges = false
+
+        while true {
+            printMenu(config: config)
+
+            print("\n\(bold)Enter option (1-8, or 'q' to quit):\(reset) ", terminator: "")
+            fflush(stdout)
+
+            guard let input = readLine()?.trimmingCharacters(in: .whitespaces).lowercased() else {
+                continue
+            }
+
+            switch input {
+            case "1":
+                config.source.url = promptString("ICS URL", current: config.source.url)
+                hasChanges = true
+            case "2":
+                config.destination.calendarName = promptString("Calendar name", current: config.destination.calendarName)
+                hasChanges = true
+            case "3":
+                configureSyncOptions(&config)
+                hasChanges = true
+            case "4":
+                config.daemon.intervalMinutes = promptInt("Sync interval (minutes)", current: config.daemon.intervalMinutes, min: 1)
+                hasChanges = true
+            case "5":
+                configureNotifications(&config)
+                hasChanges = true
+            case "6":
+                config.logging.level = promptChoice("Log level", options: ["debug", "info", "warning", "error"], current: config.logging.level)
+                hasChanges = true
+            case "7":
+                // Show current config
+                printCurrentConfig(config)
+            case "8", "s":
+                if hasChanges {
+                    try await configManager.save(config, to: global.configPath)
+                    logger.success("Configuration saved!")
+                } else {
+                    print("No changes to save.")
+                }
+            case "q", "quit", "exit":
+                if hasChanges {
+                    print("\nYou have unsaved changes.")
+                    if promptYesNo("Save before exiting?", defaultValue: true) {
+                        try await configManager.save(config, to: global.configPath)
+                        logger.success("Configuration saved!")
+                    }
+                }
+                return
+            default:
+                print("\(yellow)Invalid option. Please try again.\(reset)")
+            }
+        }
+    }
+
+    private func printMenu(config: Configuration) {
+        print("\n\(bold)╔════════════════════════════════════════════════════════╗\(reset)")
+        print("\(bold)║              Configuration Settings                     ║\(reset)")
+        print("\(bold)╚════════════════════════════════════════════════════════╝\(reset)")
+        print()
+        print("  \(cyan)1.\(reset) ICS Source URL")
+        print("     Current: \(truncate(config.source.url, maxLength: 50))")
+        print()
+        print("  \(cyan)2.\(reset) Target Calendar")
+        print("     Current: \(config.destination.calendarName)")
+        print()
+        print("  \(cyan)3.\(reset) Sync Options")
+        print("     Delete orphans: \(config.sync.deleteOrphans ? "Yes" : "No"), Window: \(formatWindow(config))")
+        print()
+        print("  \(cyan)4.\(reset) Sync Interval")
+        print("     Current: \(config.daemon.intervalMinutes) minutes")
+        print()
+        print("  \(cyan)5.\(reset) Notifications")
+        print("     \(formatNotifications(config))")
+        print()
+        print("  \(cyan)6.\(reset) Log Level")
+        print("     Current: \(config.logging.level)")
+        print()
+        print("  \(cyan)7.\(reset) Show Full Configuration")
+        print("  \(cyan)8.\(reset) Save Changes")
+        print("  \(cyan)q.\(reset) Quit")
+    }
+
+    private func configureSyncOptions(_ config: inout Configuration) {
+        print("\n\(bold)[Sync Options]\(reset)")
+
+        config.sync.deleteOrphans = promptYesNo("Delete events removed from source?", defaultValue: config.sync.deleteOrphans)
+
+        let useWindow = promptYesNo("Use date window filter?", defaultValue: config.sync.windowDaysPast != nil)
+        if useWindow {
+            config.sync.windowDaysPast = promptInt("Days in the past", current: config.sync.windowDaysPast ?? 30, min: 0)
+            config.sync.windowDaysFuture = promptInt("Days in the future", current: config.sync.windowDaysFuture ?? 365, min: 0)
+        } else {
+            config.sync.windowDaysPast = nil
+            config.sync.windowDaysFuture = nil
+        }
+
+        config.sync.syncAlarms = promptYesNo("Sync event alarms/reminders?", defaultValue: config.sync.syncAlarms)
+
+        print("\(green)✓\(reset) Sync options updated")
+    }
+
+    private func configureNotifications(_ config: inout Configuration) {
+        print("\n\(bold)[Notification Settings]\(reset)")
+
+        config.notifications.enabled = promptYesNo("Enable notifications?", defaultValue: config.notifications.enabled)
+
+        if config.notifications.enabled {
+            print("\nNotify on:")
+            config.notifications.onSuccess = promptYesNo("  Successful sync?", defaultValue: config.notifications.onSuccess)
+            config.notifications.onFailure = promptYesNo("  Failed sync?", defaultValue: config.notifications.onFailure)
+            config.notifications.onPartial = promptYesNo("  Partial sync (with errors)?", defaultValue: config.notifications.onPartial)
+
+            let useSound = promptYesNo("Play notification sound?", defaultValue: config.notifications.sound != nil)
+            config.notifications.sound = useSound ? "default" : nil
+        }
+
+        print("\(green)✓\(reset) Notification settings updated")
+    }
+
+    private func printCurrentConfig(_ config: Configuration) {
+        print("\n\(bold)Current Configuration:\(reset)")
+        print(String(repeating: "-", count: 50))
+        print()
+        print("Source:")
+        print("  URL: \(config.source.url)")
+        print("  Timeout: \(config.source.timeout)s")
+        print("  Verify SSL: \(config.source.verifySSL)")
+        print()
+        print("Destination:")
+        print("  Calendar: \(config.destination.calendarName)")
+        print("  Create if missing: \(config.destination.createIfMissing)")
+        print("  Source preference: \(config.destination.sourcePreference)")
+        print()
+        print("Sync:")
+        print("  Delete orphans: \(config.sync.deleteOrphans)")
+        print("  Sync alarms: \(config.sync.syncAlarms)")
+        if let past = config.sync.windowDaysPast, let future = config.sync.windowDaysFuture {
+            print("  Date window: \(past) days past, \(future) days future")
+        } else {
+            print("  Date window: All events")
+        }
+        print()
+        print("Daemon:")
+        print("  Interval: \(config.daemon.intervalMinutes) minutes")
+        print()
+        print("Notifications:")
+        print("  Enabled: \(config.notifications.enabled)")
+        if config.notifications.enabled {
+            print("  On success: \(config.notifications.onSuccess)")
+            print("  On failure: \(config.notifications.onFailure)")
+            print("  On partial: \(config.notifications.onPartial)")
+            print("  Sound: \(config.notifications.sound ?? "none")")
+        }
+        print()
+        print("Logging:")
+        print("  Level: \(config.logging.level)")
+        print("  Format: \(config.logging.format)")
+        print()
+        print("Press Enter to continue...")
+        _ = readLine()
+    }
+
+    // MARK: - Helpers
+
+    private func promptString(_ prompt: String, current: String) -> String {
+        print("\(prompt) [\(truncate(current, maxLength: 40))]:")
+        print("(Press Enter to keep current, or enter new value)")
+        print("> ", terminator: "")
+        fflush(stdout)
+
+        guard let input = readLine()?.trimmingCharacters(in: .whitespaces), !input.isEmpty else {
+            return current
+        }
+        return input
+    }
+
+    private func promptInt(_ prompt: String, current: Int, min: Int = 0) -> Int {
+        print("\(prompt) [\(current)]:")
+        print("> ", terminator: "")
+        fflush(stdout)
+
+        guard let input = readLine()?.trimmingCharacters(in: .whitespaces),
+              !input.isEmpty,
+              let value = Int(input),
+              value >= min else {
+            return current
+        }
+        return value
+    }
+
+    private func promptChoice(_ prompt: String, options: [String], current: String) -> String {
+        print("\(prompt):")
+        for (index, option) in options.enumerated() {
+            let marker = option == current ? " (current)" : ""
+            print("  \(index + 1). \(option)\(marker)")
+        }
+        print("> ", terminator: "")
+        fflush(stdout)
+
+        guard let input = readLine()?.trimmingCharacters(in: .whitespaces),
+              let index = Int(input),
+              index >= 1 && index <= options.count else {
+            return current
+        }
+        return options[index - 1]
+    }
+
+    private func promptYesNo(_ prompt: String, defaultValue: Bool) -> Bool {
+        let defaultStr = defaultValue ? "[Y/n]" : "[y/N]"
+        print("\(prompt) \(defaultStr): ", terminator: "")
+        fflush(stdout)
+
+        guard let input = readLine()?.trimmingCharacters(in: .whitespaces).lowercased() else {
+            return defaultValue
+        }
+
+        if input.isEmpty {
+            return defaultValue
+        }
+
+        return input == "y" || input == "yes"
+    }
+
+    private func truncate(_ str: String, maxLength: Int) -> String {
+        if str.count <= maxLength {
+            return str
+        }
+        return String(str.prefix(maxLength - 3)) + "..."
+    }
+
+    private func formatWindow(_ config: Configuration) -> String {
+        if let past = config.sync.windowDaysPast, let future = config.sync.windowDaysFuture {
+            return "\(past)d past, \(future)d future"
+        }
+        return "All events"
+    }
+
+    private func formatNotifications(_ config: Configuration) -> String {
+        if !config.notifications.enabled {
+            return "Disabled"
+        }
+        var triggers: [String] = []
+        if config.notifications.onSuccess { triggers.append("success") }
+        if config.notifications.onFailure { triggers.append("failure") }
+        if config.notifications.onPartial { triggers.append("partial") }
+        if triggers.isEmpty { return "Enabled (no triggers)" }
+        return triggers.joined(separator: ", ") + (config.notifications.sound != nil ? " (with sound)" : "")
     }
 }
