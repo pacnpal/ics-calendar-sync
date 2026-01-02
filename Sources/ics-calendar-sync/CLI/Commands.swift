@@ -8,7 +8,7 @@ struct ICSCalendarSync: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ics-calendar-sync",
         abstract: "Sync ICS calendar subscriptions to macOS Calendar",
-        version: "1.0.5",
+        version: "1.0.6",
         subcommands: [
             SetupCommand.self,
             ConfigureCommand.self,
@@ -522,16 +522,45 @@ struct InstallCommand: AsyncParsableCommand {
         global.configureLogger()
         let logger = Logger.shared
 
-        // Get executable path
-        let executablePath = CommandLine.arguments[0]
+        // Get executable path - must resolve the actual binary location
         let resolvedPath: String
 
-        if executablePath.hasPrefix("/") {
-            resolvedPath = executablePath
+        if let bundlePath = Bundle.main.executablePath {
+            // Bundle.main.executablePath gives the real path to the running binary
+            resolvedPath = bundlePath
         } else {
-            // Resolve relative path
-            let currentDir = FileManager.default.currentDirectoryPath
-            resolvedPath = (currentDir as NSString).appendingPathComponent(executablePath)
+            // Fallback: try to resolve from CommandLine.arguments[0]
+            let executablePath = CommandLine.arguments[0]
+            if executablePath.hasPrefix("/") {
+                resolvedPath = executablePath
+            } else if executablePath.contains("/") {
+                // Relative path like ./foo or dir/foo
+                let currentDir = FileManager.default.currentDirectoryPath
+                resolvedPath = (currentDir as NSString).appendingPathComponent(executablePath)
+            } else {
+                // Just a command name - resolve from PATH using 'which'
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+                process.arguments = [executablePath]
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                try? process.run()
+                process.waitUntilExit()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !path.isEmpty {
+                    resolvedPath = path
+                } else {
+                    logger.error("Cannot resolve executable path for '\(executablePath)'")
+                    throw ExitCode.failure
+                }
+            }
+        }
+
+        // Validate the binary exists
+        guard FileManager.default.fileExists(atPath: resolvedPath) else {
+            logger.error("Executable not found at: \(resolvedPath)")
+            throw ExitCode.failure
         }
 
         // Validate config exists
