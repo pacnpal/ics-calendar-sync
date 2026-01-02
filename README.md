@@ -25,33 +25,40 @@ A robust, enterprise-quality Swift command-line tool that synchronizes events fr
 
 Download the latest release from the [Releases page](https://github.com/pacnpal/ics-calendar-sync/releases).
 
-Choose the appropriate binary for your Mac:
+#### Which binary should I download?
 
-| File | Architecture |
-|------|--------------|
-| `ics-calendar-sync-arm64-vX.X.X.zip` | Apple Silicon (M1/M2/M3/M4) |
-| `ics-calendar-sync-x86_64-vX.X.X.zip` | Intel |
-| `ics-calendar-sync-universal-vX.X.X.zip` | Universal (works on both) |
+**To check your Mac type:** Click the Apple menu and select "About This Mac"
+- If it says "Chip: Apple M1/M2/M3/M4" you have **Apple Silicon**
+- If it says "Processor: Intel" you have **Intel**
+- If unsure, download the **Universal** binary (works on all Macs)
+
+| Your Mac | Download |
+|----------|----------|
+| Apple Silicon (M1/M2/M3/M4) | `ics-calendar-sync-arm64-vX.X.X.zip` |
+| Intel | `ics-calendar-sync-x86_64-vX.X.X.zip` |
+| Not sure / Want one binary for all Macs | `ics-calendar-sync-universal-vX.X.X.zip` |
+
+#### Installation steps
+
+1. Download the appropriate `.zip` file from the [Releases page](https://github.com/pacnpal/ics-calendar-sync/releases)
+2. Double-click to extract, or run: `unzip ics-calendar-sync-*.zip`
+3. Open Terminal and run:
 
 ```bash
-# Download (example for Apple Silicon)
-curl -LO https://github.com/pacnpal/ics-calendar-sync/releases/latest/download/ics-calendar-sync-arm64-v1.0.0.zip
-
-# Extract
-unzip ics-calendar-sync-*.zip
-
-# Make executable and move to PATH
 chmod +x ics-calendar-sync-*
 sudo mv ics-calendar-sync-* /usr/local/bin/ics-calendar-sync
-
-# Verify installation
-ics-calendar-sync --version
 ```
 
-On first run, macOS may show a security warning. To allow the app:
+4. Verify installation: `ics-calendar-sync --version`
+
+#### macOS Security Warning
+
+On first run, macOS may block the app. To allow it:
+
 1. Open **System Settings** then **Privacy and Security**
 2. Scroll down to find the blocked app message
 3. Click **Allow Anyway**
+4. Run the command again
 
 ### From Source
 
