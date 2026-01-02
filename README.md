@@ -18,16 +18,48 @@ A robust, enterprise-quality Swift command-line tool that synchronizes events fr
 ## Requirements
 
 - macOS 13.0 (Ventura) or later
-- Xcode 15.0 or later (for building)
-- Swift 5.9 or later
 
 ## Installation
 
+### Pre-built Binary (Recommended)
+
+Download the latest release from the [Releases page](https://github.com/pacnpal/ics-calendar-sync/releases).
+
+Choose the appropriate binary for your Mac:
+
+| File | Architecture |
+|------|--------------|
+| `ics-calendar-sync-arm64-vX.X.X.zip` | Apple Silicon (M1/M2/M3/M4) |
+| `ics-calendar-sync-x86_64-vX.X.X.zip` | Intel |
+| `ics-calendar-sync-universal-vX.X.X.zip` | Universal (works on both) |
+
+```bash
+# Download (example for Apple Silicon)
+curl -LO https://github.com/pacnpal/ics-calendar-sync/releases/latest/download/ics-calendar-sync-arm64-v1.0.0.zip
+
+# Extract
+unzip ics-calendar-sync-*.zip
+
+# Make executable and move to PATH
+chmod +x ics-calendar-sync-*
+sudo mv ics-calendar-sync-* /usr/local/bin/ics-calendar-sync
+
+# Verify installation
+ics-calendar-sync --version
+```
+
+On first run, macOS may show a security warning. To allow the app:
+1. Open **System Settings** then **Privacy and Security**
+2. Scroll down to find the blocked app message
+3. Click **Allow Anyway**
+
 ### From Source
+
+Requires Xcode 15.0+ and Swift 5.9+.
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ics-calendar-sync.git
+git clone https://github.com/pacnpal/ics-calendar-sync.git
 cd ics-calendar-sync
 
 # Build the release binary
@@ -40,7 +72,7 @@ cp .build/release/ics-calendar-sync ~/.local/bin/
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-### Universal Binary (Intel + Apple Silicon)
+### Build Universal Binary (Intel + Apple Silicon)
 
 ```bash
 swift build -c release --arch arm64 --arch x86_64
