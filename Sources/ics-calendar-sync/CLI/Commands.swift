@@ -8,13 +8,15 @@ struct ICSCalendarSync: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ics-calendar-sync",
         abstract: "Sync ICS calendar subscriptions to macOS Calendar",
-        version: "1.0.3",
+        version: "1.0.4",
         subcommands: [
             SetupCommand.self,
             ConfigureCommand.self,
             SyncCommand.self,
             DaemonCommand.self,
             StatusCommand.self,
+            StartCommand.self,
+            StopCommand.self,
             ValidateCommand.self,
             ListCommand.self,
             CalendarsCommand.self,
@@ -231,6 +233,88 @@ struct StatusCommand: AsyncParsableCommand {
                 let time = record.startedAt.formatted(style: .short, timeStyle: .short)
                 print("  \(statusIcon) \(time) - +\(record.eventsCreated) ~\(record.eventsUpdated) -\(record.eventsDeleted)")
             }
+        }
+    }
+}
+
+// MARK: - Start Command
+
+struct StartCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "start",
+        abstract: "Start the background service (temporary, until restart)"
+    )
+
+    @OptionGroup var global: GlobalOptions
+
+    mutating func run() async throws {
+        global.configureLogger()
+        let logger = Logger.shared
+
+        // Check if service is installed
+        guard LaunchdGenerator.isInstalled() else {
+            logger.error("Service is not installed")
+            logger.info("Run 'ics-calendar-sync install' first to install the service")
+            throw ExitCode.failure
+        }
+
+        // Check current status
+        let status = LaunchdGenerator.getStatus()
+        if case .running = status {
+            logger.info("Service is already running")
+            return
+        }
+
+        // Start the service
+        do {
+            try LaunchdGenerator.start()
+            logger.info("Note: This is temporary and won't persist through system restarts")
+        } catch {
+            logger.error("Failed to start service: \(error.localizedDescription)")
+            throw ExitCode.failure
+        }
+    }
+}
+
+// MARK: - Stop Command
+
+struct StopCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "stop",
+        abstract: "Stop the background service (temporary, until restart)"
+    )
+
+    @OptionGroup var global: GlobalOptions
+
+    mutating func run() async throws {
+        global.configureLogger()
+        let logger = Logger.shared
+
+        // Check if service is installed
+        guard LaunchdGenerator.isInstalled() else {
+            logger.error("Service is not installed")
+            throw ExitCode.failure
+        }
+
+        // Check current status
+        let status = LaunchdGenerator.getStatus()
+        if case .stopped = status {
+            logger.info("Service is already stopped")
+            return
+        }
+        if case .notInstalled = status {
+            logger.info("Service is not running")
+            return
+        }
+
+        // Stop the service
+        do {
+            try LaunchdGenerator.stop()
+            logger.info("Note: Service will start again on next system restart")
+            logger.info("Use 'ics-calendar-sync uninstall' to permanently remove")
+        } catch {
+            logger.error("Failed to stop service: \(error.localizedDescription)")
+            throw ExitCode.failure
         }
     }
 }
