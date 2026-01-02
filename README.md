@@ -115,6 +115,8 @@ The interactive wizard will guide you through:
 - Configuring sync options
 - Setting up background sync
 
+**Important**: On first run, macOS will prompt you to grant calendar access. You **must** click "Allow" or "OK" when prompted, otherwise the app cannot read or write to your calendars. See [Calendar Access](#calendar-access) in troubleshooting if you accidentally denied access.
+
 ### 2. Manual Sync
 
 ```bash
@@ -491,16 +493,53 @@ The tool fully supports iCalendar recurrence rules (RRULE), including:
 
 ## Troubleshooting
 
-### Calendar Access Denied
+### Calendar Access
 
-If you see "Calendar access denied":
+This app requires access to your calendars via macOS Calendar permissions. When you first run the app, macOS will display a permission dialog asking to allow access.
 
-1. Open **System Settings** then **Privacy and Security** then **Calendars**
-2. Find Terminal (or the app running the command)
-3. Enable calendar access
-4. Re-run the sync
+#### Granting Access on First Run
 
-On macOS Sonoma and later, you may also need to grant Full Disk Access for certain operations.
+When prompted with "ics-calendar-sync would like to access your calendars":
+- Click **OK** or **Allow** to grant access
+- If you click **Don't Allow**, the app will not be able to sync events
+
+#### If You Accidentally Denied Access
+
+If you see "Calendar access denied" or "Calendar access not determined":
+
+1. Open **System Settings** (or System Preferences on older macOS)
+2. Go to **Privacy & Security**
+3. Click **Calendars** in the left sidebar
+4. Find **Terminal** (or **iTerm**, or whatever terminal app you use)
+5. Toggle the switch **ON** to enable calendar access
+6. You may need to quit and restart your terminal app
+7. Re-run `ics-calendar-sync setup` or `ics-calendar-sync sync`
+
+#### Calendar Access for Background Service
+
+If you installed the background service with `ics-calendar-sync install`, the launchd service runs under your user account and inherits calendar permissions from Terminal. If background sync is not working:
+
+1. Run `ics-calendar-sync sync` manually from Terminal first to trigger the permission prompt
+2. Grant access when prompted
+3. The background service should now work
+
+#### Full Disk Access (macOS Sonoma and later)
+
+On macOS Sonoma (14.0) and later, some calendar operations may require Full Disk Access:
+
+1. Open **System Settings** then **Privacy & Security** then **Full Disk Access**
+2. Click the **+** button
+3. Navigate to your terminal app (e.g., `/Applications/Utilities/Terminal.app`)
+4. Add it to the list and ensure it's enabled
+
+#### Still Having Permission Issues?
+
+If you continue to have calendar access problems:
+
+1. Check if the Calendar app itself is working (open Calendar.app and verify your calendars appear)
+2. Try signing out and back into iCloud in System Settings if using iCloud calendars
+3. Run with verbose output to see detailed errors: `ics-calendar-sync sync -vv`
+4. Check the system console for permission-related errors: `log show --predicate 'subsystem == "com.apple.TCC"' --last 5m`
 
 ### Events Not Appearing
 
