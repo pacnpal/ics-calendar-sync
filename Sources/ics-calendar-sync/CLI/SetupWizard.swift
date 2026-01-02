@@ -335,28 +335,64 @@ actor SetupWizard {
         printSection("Sync Options")
 
         // Delete orphans
-        print("When events are removed from the ICS source, should they")
-        print("be deleted from your calendar?")
-        config.sync.deleteOrphans = promptYesNo("Delete removed events?", defaultValue: true)
+        print("When events are removed from the ICS source:")
+        print()
+        print("  \(cyan)1.\(reset) Delete them from calendar (Recommended)")
+        print("  \(cyan)2.\(reset) Keep them in calendar")
+        print()
+        print("Select option [1]: ", terminator: "")
+        fflush(stdout)
+
+        let orphanChoice = readLine()?.trimmed ?? "1"
+        config.sync.deleteOrphans = (orphanChoice != "2")
 
         // Date window
         print()
-        print("Sync events within a date window? (Recommended for large calendars)")
-        let useWindow = promptYesNo("Use date window?", defaultValue: true)
+        print("Sync window (limits which events to sync):")
+        print()
+        print("  \(cyan)1.\(reset) Standard - 30 days past, 1 year future (Recommended)")
+        print("  \(cyan)2.\(reset) Short - 7 days past, 3 months future")
+        print("  \(cyan)3.\(reset) Long - 1 year past, 2 years future")
+        print("  \(cyan)4.\(reset) All events - No date limits")
+        print("  \(cyan)5.\(reset) Custom - Enter your own values")
+        print()
+        print("Select option [1]: ", terminator: "")
+        fflush(stdout)
 
-        if useWindow {
-            print("Days in the past to sync (default: 30):")
-            if let input = readLine()?.trimmed, let days = Int(input), days >= 0 {
-                config.sync.windowDaysPast = days
-            }
+        let windowChoice = readLine()?.trimmed ?? "1"
 
-            print("Days in the future to sync (default: 365):")
-            if let input = readLine()?.trimmed, let days = Int(input), days >= 0 {
-                config.sync.windowDaysFuture = days
-            }
-        } else {
+        switch windowChoice {
+        case "1", "":
+            config.sync.windowDaysPast = 30
+            config.sync.windowDaysFuture = 365
+        case "2":
+            config.sync.windowDaysPast = 7
+            config.sync.windowDaysFuture = 90
+        case "3":
+            config.sync.windowDaysPast = 365
+            config.sync.windowDaysFuture = 730
+        case "4":
             config.sync.windowDaysPast = nil
             config.sync.windowDaysFuture = nil
+        case "5":
+            print("Days in the past [30]: ", terminator: "")
+            fflush(stdout)
+            if let input = readLine()?.trimmed, let days = Int(input), days >= 0 {
+                config.sync.windowDaysPast = days
+            } else {
+                config.sync.windowDaysPast = 30
+            }
+
+            print("Days in the future [365]: ", terminator: "")
+            fflush(stdout)
+            if let input = readLine()?.trimmed, let days = Int(input), days >= 0 {
+                config.sync.windowDaysFuture = days
+            } else {
+                config.sync.windowDaysFuture = 365
+            }
+        default:
+            config.sync.windowDaysPast = 30
+            config.sync.windowDaysFuture = 365
         }
 
         print()
@@ -367,18 +403,53 @@ actor SetupWizard {
     private func configureScheduling() async {
         printSection("Background Sync")
 
-        print("Would you like to set up automatic background syncing?")
-        let setupDaemon = promptYesNo("Enable background sync?", defaultValue: true)
+        print("Automatic background sync keeps your calendar up to date.")
+        print()
+        print("Sync frequency:")
+        print()
+        print("  \(cyan)1.\(reset) Every 15 minutes (Recommended)")
+        print("  \(cyan)2.\(reset) Every 30 minutes")
+        print("  \(cyan)3.\(reset) Every hour")
+        print("  \(cyan)4.\(reset) Every 2 hours")
+        print("  \(cyan)5.\(reset) Manual only - No automatic sync")
+        print("  \(cyan)6.\(reset) Custom interval")
+        print()
+        print("Select option [1]: ", terminator: "")
+        fflush(stdout)
 
-        if setupDaemon {
-            print()
-            print("Sync interval in minutes (default: 15):")
+        let intervalChoice = readLine()?.trimmed ?? "1"
+
+        switch intervalChoice {
+        case "1", "":
+            config.daemon.intervalMinutes = 15
+            printSuccess("Sync every 15 minutes")
+        case "2":
+            config.daemon.intervalMinutes = 30
+            printSuccess("Sync every 30 minutes")
+        case "3":
+            config.daemon.intervalMinutes = 60
+            printSuccess("Sync every hour")
+        case "4":
+            config.daemon.intervalMinutes = 120
+            printSuccess("Sync every 2 hours")
+        case "5":
+            config.daemon.intervalMinutes = 0  // Signal for manual only
+            printSuccess("Manual sync only")
+        case "6":
+            print("Enter interval in minutes [15]: ", terminator: "")
+            fflush(stdout)
             if let input = readLine()?.trimmed, let minutes = Int(input), minutes >= 1 {
                 config.daemon.intervalMinutes = minutes
+            } else {
+                config.daemon.intervalMinutes = 15
             }
+            printSuccess("Sync every \(config.daemon.intervalMinutes) minutes")
+        default:
+            config.daemon.intervalMinutes = 15
+            printSuccess("Sync every 15 minutes")
+        }
 
-            print()
-            printSuccess("Background sync will run every \(config.daemon.intervalMinutes) minutes")
+        if config.daemon.intervalMinutes > 0 {
             print()
             print("After setup, run:")
             print("  \(cyan)ics-calendar-sync install\(reset)")
@@ -393,41 +464,61 @@ actor SetupWizard {
     private func configureNotifications() async {
         printSection("Notifications")
 
-        print("Would you like to receive macOS notifications for sync events?")
-        print("(Useful for monitoring sync status when running in background)")
+        print("macOS notifications help you monitor sync status when running")
+        print("in the background. Choose a notification level:")
         print()
+        print("  \(cyan)1.\(reset) Off - No notifications")
+        print("  \(cyan)2.\(reset) Errors only - Notify on failures (Recommended)")
+        print("  \(cyan)3.\(reset) Errors & warnings - Notify on failures and partial syncs")
+        print("  \(cyan)4.\(reset) All - Notify on every sync (success, partial, failure)")
+        print()
+        print("Select option [2]: ", terminator: "")
+        fflush(stdout)
 
-        let enableNotifications = promptYesNo("Enable notifications?", defaultValue: true)
+        let choice = readLine()?.trimmed ?? "2"
 
-        if enableNotifications {
-            config.notifications.enabled = true
-
-            print()
-            print("When should notifications be shown?")
-            print()
-
-            // Success notifications
-            print("Notify on successful sync? (Shows event counts)")
-            config.notifications.onSuccess = promptYesNo("  Sync success", defaultValue: false)
-
-            // Failure notifications
-            print("Notify when sync fails? (Shows error message)")
-            config.notifications.onFailure = promptYesNo("  Sync failure", defaultValue: true)
-
-            // Partial notifications
-            print("Notify on partial sync? (Some events failed)")
-            config.notifications.onPartial = promptYesNo("  Partial sync", defaultValue: true)
-
-            // Sound
-            print()
-            print("Play sound with notifications?")
-            let useSound = promptYesNo("Enable notification sound?", defaultValue: true)
-            config.notifications.sound = useSound ? "default" : nil
-
-            print()
-            printSuccess("Notifications configured")
-        } else {
+        switch choice {
+        case "1":
             config.notifications.enabled = false
+            printSuccess("Notifications disabled")
+        case "2", "":
+            config.notifications.enabled = true
+            config.notifications.onSuccess = false
+            config.notifications.onFailure = true
+            config.notifications.onPartial = false
+            printSuccess("Notifications: errors only")
+        case "3":
+            config.notifications.enabled = true
+            config.notifications.onSuccess = false
+            config.notifications.onFailure = true
+            config.notifications.onPartial = true
+            printSuccess("Notifications: errors & warnings")
+        case "4":
+            config.notifications.enabled = true
+            config.notifications.onSuccess = true
+            config.notifications.onFailure = true
+            config.notifications.onPartial = true
+            printSuccess("Notifications: all events")
+        default:
+            // Default to errors only
+            config.notifications.enabled = true
+            config.notifications.onSuccess = false
+            config.notifications.onFailure = true
+            config.notifications.onPartial = false
+            printSuccess("Notifications: errors only")
+        }
+
+        if config.notifications.enabled {
+            print()
+            print("Notification sound:")
+            print("  \(cyan)1.\(reset) Default system sound (Recommended)")
+            print("  \(cyan)2.\(reset) Silent (no sound)")
+            print()
+            print("Select option [1]: ", terminator: "")
+            fflush(stdout)
+
+            let soundChoice = readLine()?.trimmed ?? "1"
+            config.notifications.sound = (soundChoice == "2") ? nil : "default"
         }
 
         print()

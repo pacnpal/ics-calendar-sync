@@ -8,7 +8,7 @@ struct ICSCalendarSync: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ics-calendar-sync",
         abstract: "Sync ICS calendar subscriptions to macOS Calendar",
-        version: "1.0.2",
+        version: "1.0.3",
         subcommands: [
             SetupCommand.self,
             ConfigureCommand.self,
@@ -666,35 +666,141 @@ struct ConfigureCommand: AsyncParsableCommand {
     private func configureSyncOptions(_ config: inout Configuration) {
         print("\n\(bold)[Sync Options]\(reset)")
 
-        config.sync.deleteOrphans = promptYesNo("Delete events removed from source?", defaultValue: config.sync.deleteOrphans)
+        // Delete orphans
+        print()
+        print("When events are removed from ICS source:")
+        print("  \(cyan)1.\(reset) Delete them from calendar")
+        print("  \(cyan)2.\(reset) Keep them in calendar")
+        let currentOrphan = config.sync.deleteOrphans ? "1" : "2"
+        print("Select option [\(currentOrphan)]: ", terminator: "")
+        fflush(stdout)
+        let orphanChoice = readLine()?.trimmingCharacters(in: .whitespaces) ?? currentOrphan
+        config.sync.deleteOrphans = (orphanChoice.isEmpty ? currentOrphan : orphanChoice) != "2"
 
-        let useWindow = promptYesNo("Use date window filter?", defaultValue: config.sync.windowDaysPast != nil)
-        if useWindow {
-            config.sync.windowDaysPast = promptInt("Days in the past", current: config.sync.windowDaysPast ?? 30, min: 0)
-            config.sync.windowDaysFuture = promptInt("Days in the future", current: config.sync.windowDaysFuture ?? 365, min: 0)
+        // Date window
+        print()
+        print("Sync window:")
+        print("  \(cyan)1.\(reset) Standard - 30 days past, 1 year future")
+        print("  \(cyan)2.\(reset) Short - 7 days past, 3 months future")
+        print("  \(cyan)3.\(reset) Long - 1 year past, 2 years future")
+        print("  \(cyan)4.\(reset) All events - No date limits")
+        print("  \(cyan)5.\(reset) Custom")
+
+        let currentWindow: String
+        if config.sync.windowDaysPast == nil {
+            currentWindow = "4"
+        } else if config.sync.windowDaysPast == 7 && config.sync.windowDaysFuture == 90 {
+            currentWindow = "2"
+        } else if config.sync.windowDaysPast == 365 && config.sync.windowDaysFuture == 730 {
+            currentWindow = "3"
+        } else if config.sync.windowDaysPast == 30 && config.sync.windowDaysFuture == 365 {
+            currentWindow = "1"
         } else {
-            config.sync.windowDaysPast = nil
-            config.sync.windowDaysFuture = nil
+            currentWindow = "5"
         }
 
-        config.sync.syncAlarms = promptYesNo("Sync event alarms/reminders?", defaultValue: config.sync.syncAlarms)
+        print("Select option [\(currentWindow)]: ", terminator: "")
+        fflush(stdout)
+        let windowChoice = readLine()?.trimmingCharacters(in: .whitespaces) ?? currentWindow
+
+        switch windowChoice.isEmpty ? currentWindow : windowChoice {
+        case "1":
+            config.sync.windowDaysPast = 30
+            config.sync.windowDaysFuture = 365
+        case "2":
+            config.sync.windowDaysPast = 7
+            config.sync.windowDaysFuture = 90
+        case "3":
+            config.sync.windowDaysPast = 365
+            config.sync.windowDaysFuture = 730
+        case "4":
+            config.sync.windowDaysPast = nil
+            config.sync.windowDaysFuture = nil
+        case "5":
+            config.sync.windowDaysPast = promptInt("Days in the past", current: config.sync.windowDaysPast ?? 30, min: 0)
+            config.sync.windowDaysFuture = promptInt("Days in the future", current: config.sync.windowDaysFuture ?? 365, min: 0)
+        default:
+            break
+        }
+
+        // Alarms
+        print()
+        print("Sync event alarms/reminders:")
+        print("  \(cyan)1.\(reset) Yes - Sync alarms")
+        print("  \(cyan)2.\(reset) No - Ignore alarms")
+        let currentAlarm = config.sync.syncAlarms ? "1" : "2"
+        print("Select option [\(currentAlarm)]: ", terminator: "")
+        fflush(stdout)
+        let alarmChoice = readLine()?.trimmingCharacters(in: .whitespaces) ?? currentAlarm
+        config.sync.syncAlarms = (alarmChoice.isEmpty ? currentAlarm : alarmChoice) != "2"
 
         print("\(green)✓\(reset) Sync options updated")
     }
 
     private func configureNotifications(_ config: inout Configuration) {
         print("\n\(bold)[Notification Settings]\(reset)")
+        print()
+        print("Choose notification level:")
+        print()
+        print("  \(cyan)1.\(reset) Off - No notifications")
+        print("  \(cyan)2.\(reset) Errors only - Notify on failures")
+        print("  \(cyan)3.\(reset) Errors & warnings - Notify on failures and partial syncs")
+        print("  \(cyan)4.\(reset) All - Notify on every sync")
+        print()
 
-        config.notifications.enabled = promptYesNo("Enable notifications?", defaultValue: config.notifications.enabled)
+        // Show current setting
+        let currentLevel: String
+        if !config.notifications.enabled {
+            currentLevel = "1"
+        } else if config.notifications.onSuccess {
+            currentLevel = "4"
+        } else if config.notifications.onPartial {
+            currentLevel = "3"
+        } else {
+            currentLevel = "2"
+        }
+
+        print("Select option [\(currentLevel)]: ", terminator: "")
+        fflush(stdout)
+
+        let choice = readLine()?.trimmingCharacters(in: .whitespaces) ?? currentLevel
+
+        switch choice.isEmpty ? currentLevel : choice {
+        case "1":
+            config.notifications.enabled = false
+            config.notifications.onSuccess = false
+            config.notifications.onFailure = false
+            config.notifications.onPartial = false
+        case "2":
+            config.notifications.enabled = true
+            config.notifications.onSuccess = false
+            config.notifications.onFailure = true
+            config.notifications.onPartial = false
+        case "3":
+            config.notifications.enabled = true
+            config.notifications.onSuccess = false
+            config.notifications.onFailure = true
+            config.notifications.onPartial = true
+        case "4":
+            config.notifications.enabled = true
+            config.notifications.onSuccess = true
+            config.notifications.onFailure = true
+            config.notifications.onPartial = true
+        default:
+            break  // Keep current
+        }
 
         if config.notifications.enabled {
-            print("\nNotify on:")
-            config.notifications.onSuccess = promptYesNo("  Successful sync?", defaultValue: config.notifications.onSuccess)
-            config.notifications.onFailure = promptYesNo("  Failed sync?", defaultValue: config.notifications.onFailure)
-            config.notifications.onPartial = promptYesNo("  Partial sync (with errors)?", defaultValue: config.notifications.onPartial)
+            print()
+            print("Notification sound:")
+            print("  \(cyan)1.\(reset) Default system sound")
+            print("  \(cyan)2.\(reset) Silent (no sound)")
+            let currentSound = config.notifications.sound != nil ? "1" : "2"
+            print("Select option [\(currentSound)]: ", terminator: "")
+            fflush(stdout)
 
-            let useSound = promptYesNo("Play notification sound?", defaultValue: config.notifications.sound != nil)
-            config.notifications.sound = useSound ? "default" : nil
+            let soundChoice = readLine()?.trimmingCharacters(in: .whitespaces) ?? currentSound
+            config.notifications.sound = (soundChoice == "2") ? nil : "default"
         }
 
         print("\(green)✓\(reset) Notification settings updated")
