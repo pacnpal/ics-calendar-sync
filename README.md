@@ -830,7 +830,7 @@ swift test --filter ICSParserTests/testBasicEvent
 
 ## Version
 
-Current version: 1.0.0
+Current version: 1.0.4
 
 ## License
 
