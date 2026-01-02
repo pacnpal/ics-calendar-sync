@@ -4,6 +4,9 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build macOS Binaries
@@ -51,42 +54,14 @@ jobs:
           cd artifacts
           shasum -a 256 *.tar.gz > checksums-${{ steps.version.outputs.VERSION }}.txt
 
-      - name: Upload ARM64 binary to release
-        uses: actions/upload-release-asset@v1
+      - name: Upload release assets
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: artifacts/ics-calendar-sync-arm64-${{ steps.version.outputs.VERSION }}.tar.gz
-          asset_name: ics-calendar-sync-arm64-${{ steps.version.outputs.VERSION }}.tar.gz
-          asset_content_type: application/gzip
-
-      - name: Upload Intel binary to release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: artifacts/ics-calendar-sync-x86_64-${{ steps.version.outputs.VERSION }}.tar.gz
-          asset_name: ics-calendar-sync-x86_64-${{ steps.version.outputs.VERSION }}.tar.gz
-          asset_content_type: application/gzip
-
-      - name: Upload Universal binary to release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: artifacts/ics-calendar-sync-universal-${{ steps.version.outputs.VERSION }}.tar.gz
-          asset_name: ics-calendar-sync-universal-${{ steps.version.outputs.VERSION }}.tar.gz
-          asset_content_type: application/gzip
-
-      - name: Upload checksums to release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: artifacts/checksums-${{ steps.version.outputs.VERSION }}.txt
-          asset_name: checksums-${{ steps.version.outputs.VERSION }}.txt
-          asset_content_type: text/plain
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd artifacts
+          gh release upload ${{ steps.version.outputs.VERSION }} \
+            ics-calendar-sync-arm64-${{ steps.version.outputs.VERSION }}.tar.gz \
+            ics-calendar-sync-x86_64-${{ steps.version.outputs.VERSION }}.tar.gz \
+            ics-calendar-sync-universal-${{ steps.version.outputs.VERSION }}.tar.gz \
+            checksums-${{ steps.version.outputs.VERSION }}.txt \
+            --clobber
