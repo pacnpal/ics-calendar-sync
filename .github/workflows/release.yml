@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    name: Build macOS Binaries
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.9"
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Build ARM64 binary
+        run: |
+          swift build -c release --arch arm64
+          mkdir -p artifacts
+          cp .build/arm64-apple-macosx/release/ics-calendar-sync artifacts/ics-calendar-sync-arm64
+
+      - name: Build Intel binary
+        run: |
+          swift build -c release --arch x86_64
+          cp .build/x86_64-apple-macosx/release/ics-calendar-sync artifacts/ics-calendar-sync-x86_64
+
+      - name: Build Universal binary
+        run: |
+          swift build -c release --arch arm64 --arch x86_64
+          cp .build/apple/Products/Release/ics-calendar-sync artifacts/ics-calendar-sync-universal
+
+      - name: Create archives
+        run: |
+          cd artifacts
+          for binary in ics-calendar-sync-*; do
+            chmod +x "$binary"
+            tar -czvf "${binary}-${{ steps.version.outputs.VERSION }}.tar.gz" "$binary"
+          done
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          shasum -a 256 *.tar.gz > checksums-${{ steps.version.outputs.VERSION }}.txt
+
+      - name: Upload ARM64 binary to release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: artifacts/ics-calendar-sync-arm64-${{ steps.version.outputs.VERSION }}.tar.gz
+          asset_name: ics-calendar-sync-arm64-${{ steps.version.outputs.VERSION }}.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload Intel binary to release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: artifacts/ics-calendar-sync-x86_64-${{ steps.version.outputs.VERSION }}.tar.gz
+          asset_name: ics-calendar-sync-x86_64-${{ steps.version.outputs.VERSION }}.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload Universal binary to release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: artifacts/ics-calendar-sync-universal-${{ steps.version.outputs.VERSION }}.tar.gz
+          asset_name: ics-calendar-sync-universal-${{ steps.version.outputs.VERSION }}.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload checksums to release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: artifacts/checksums-${{ steps.version.outputs.VERSION }}.txt
+          asset_name: checksums-${{ steps.version.outputs.VERSION }}.txt
+          asset_content_type: text/plain
