@@ -70,7 +70,7 @@ Note: This method does not work on macOS 15 or later.
 
 If you see "cannot be opened because it is from an unidentified developer":
 
-1. Open **System Settings** then **Privacy and Security**
+1. Open **System Settings** then **Privacy & Security**
 2. Scroll down to find the blocked app message
 3. Click **Allow Anyway**
 4. Run the command again and click **Open** when prompted
@@ -508,12 +508,11 @@ When prompted with "ics-calendar-sync would like to access your calendars":
 If you see "Calendar access denied" or "Calendar access not determined":
 
 1. Open **System Settings** (or System Preferences on older macOS)
-2. Go to **Privacy & Security**
-3. Click **Calendars** in the left sidebar
-4. Find **Terminal** (or **iTerm**, or whatever terminal app you use)
-5. Toggle the switch **ON** to enable calendar access
-6. You may need to quit and restart your terminal app
-7. Re-run `ics-calendar-sync setup` or `ics-calendar-sync sync`
+2. Go to **Privacy & Security** then **Calendars**
+3. Find **Terminal** (or **iTerm**, or whatever terminal app you use)
+4. Toggle the switch **ON** to enable calendar access
+5. You may need to quit and restart your terminal app
+6. Re-run `ics-calendar-sync setup` or `ics-calendar-sync sync`
 
 #### Calendar Access for Background Service
 
