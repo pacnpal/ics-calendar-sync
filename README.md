@@ -53,12 +53,24 @@ sudo mv ics-calendar-sync-* /usr/local/bin/ics-calendar-sync
 
 #### macOS Security Warning
 
-On first run, macOS may block the app. To allow it:
+macOS quarantines files downloaded from the internet. You have two options:
+
+**Option 1: Remove quarantine attribute (recommended)**
+
+After extracting, run this command before moving the binary:
+
+```bash
+xattr -d com.apple.quarantine ics-calendar-sync-*
+```
+
+**Option 2: Allow via System Settings**
+
+If you see "cannot be opened because it is from an unidentified developer":
 
 1. Open **System Settings** then **Privacy and Security**
 2. Scroll down to find the blocked app message
 3. Click **Allow Anyway**
-4. Run the command again
+4. Run the command again and click **Open** when prompted
 
 ### From Source
 
