@@ -1,0 +1,43 @@
+# Build artifacts
+.build/
+.swiftpm/
+DerivedData/
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xccheckout
+*.moved-aside
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# IDE
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Package managers
+Packages/
+Package.pins
+Package.resolved
+
+# Test output
+*.xcresult
+
+# Temporary files
+*.tmp
+*.temp
+
+# Local configuration (may contain secrets)
+*.local.json
