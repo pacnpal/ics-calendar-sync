@@ -110,8 +110,6 @@ actor Daemon {
                     )
                 }
             } else {
-                logger.info("Sync complete: \(result.created) created, \(result.updated) updated, \(result.deleted) deleted, \(result.unchanged) unchanged")
-
                 // Send success notification
                 if notificationConfig.enabled && notificationConfig.onSuccess {
                     await notificationManager.sendSyncSuccess(
