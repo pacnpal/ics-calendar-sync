@@ -276,6 +276,13 @@ Configuration is stored in `~/.config/ics-calendar-sync/config.json`:
   },
   "daemon": {
     "interval_minutes": 15
+  },
+  "notifications": {
+    "enabled": false,
+    "on_success": false,
+    "on_failure": true,
+    "on_partial": true,
+    "sound": "default"
   }
 }
 ```
@@ -327,6 +334,32 @@ Configuration is stored in `~/.config/ics-calendar-sync/config.json`:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `interval_minutes` | integer | `15` | Minutes between sync cycles (minimum 1) |
+
+#### notifications
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `false` | Enable macOS notifications |
+| `on_success` | boolean | `false` | Notify on successful sync |
+| `on_failure` | boolean | `true` | Notify when sync fails |
+| `on_partial` | boolean | `true` | Notify when sync completes with errors |
+| `sound` | string | `"default"` | Notification sound (or `null` for silent) |
+
+**Example notifications configuration:**
+
+```json
+{
+  "notifications": {
+    "enabled": true,
+    "on_success": false,
+    "on_failure": true,
+    "on_partial": true,
+    "sound": "default"
+  }
+}
+```
+
+Available sounds are located in `/System/Library/Sounds/` (e.g., `"Ping"`, `"Glass"`, `"Blow"`). Set to `null` to disable sounds.
 
 ### Environment Variables
 

@@ -6,15 +6,18 @@ import Foundation
 actor Daemon {
     private let syncEngine: SyncEngine
     private let intervalMinutes: Int
+    private let notificationConfig: Configuration.NotificationConfig
     private let logger = Logger.shared
+    private let notificationManager = NotificationManager.shared
 
     private var isRunning = false
     private var syncTask: Task<Void, Never>?
     private var shouldStop = false
 
-    init(syncEngine: SyncEngine, intervalMinutes: Int) {
+    init(syncEngine: SyncEngine, intervalMinutes: Int, notificationConfig: Configuration.NotificationConfig = Configuration.NotificationConfig()) {
         self.syncEngine = syncEngine
         self.intervalMinutes = intervalMinutes
+        self.notificationConfig = notificationConfig
     }
 
     // MARK: - Lifecycle
@@ -93,11 +96,41 @@ actor Daemon {
 
             if result.hasErrors {
                 logger.warning("Sync completed with \(result.errors.count) errors")
+
+                // Send partial success notification
+                if notificationConfig.enabled && notificationConfig.onPartial {
+                    await notificationManager.sendSyncPartial(
+                        created: result.created,
+                        updated: result.updated,
+                        deleted: result.deleted,
+                        errorCount: result.errors.count,
+                        sound: notificationConfig.sound
+                    )
+                }
             } else {
                 logger.info("Sync complete: \(result.created) created, \(result.updated) updated, \(result.deleted) deleted, \(result.unchanged) unchanged")
+
+                // Send success notification
+                if notificationConfig.enabled && notificationConfig.onSuccess {
+                    await notificationManager.sendSyncSuccess(
+                        created: result.created,
+                        updated: result.updated,
+                        deleted: result.deleted,
+                        unchanged: result.unchanged,
+                        sound: notificationConfig.sound
+                    )
+                }
             }
         } catch {
             logger.error("Sync failed: \(error.localizedDescription)")
+
+            // Send failure notification
+            if notificationConfig.enabled && notificationConfig.onFailure {
+                await notificationManager.sendSyncFailure(
+                    errorMessage: error.localizedDescription,
+                    sound: notificationConfig.sound
+                )
+            }
         }
     }
 
@@ -129,8 +162,13 @@ enum DaemonRunner {
         let interval = intervalOverride ?? config.daemon.intervalMinutes
         logger.info("Sync interval: \(interval) minutes")
 
+        // Log notification settings
+        if config.notifications.enabled {
+            logger.info("Notifications enabled (success: \(config.notifications.onSuccess), failure: \(config.notifications.onFailure), partial: \(config.notifications.onPartial))")
+        }
+
         // Create and start daemon
-        let daemon = Daemon(syncEngine: syncEngine, intervalMinutes: interval)
+        let daemon = Daemon(syncEngine: syncEngine, intervalMinutes: interval, notificationConfig: config.notifications)
         await daemon.start()
     }
 

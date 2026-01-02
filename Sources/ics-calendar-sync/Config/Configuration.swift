@@ -10,6 +10,7 @@ struct Configuration: Codable, Sendable {
     var state: StateConfig
     var logging: LoggingConfig
     var daemon: DaemonConfig
+    var notifications: NotificationConfig
 
     init() {
         self.source = SourceConfig()
@@ -18,6 +19,7 @@ struct Configuration: Codable, Sendable {
         self.state = StateConfig()
         self.logging = LoggingConfig()
         self.daemon = DaemonConfig()
+        self.notifications = NotificationConfig()
     }
 
     init(from decoder: Decoder) throws {
@@ -28,10 +30,11 @@ struct Configuration: Codable, Sendable {
         state = try container.decodeIfPresent(StateConfig.self, forKey: .state) ?? StateConfig()
         logging = try container.decodeIfPresent(LoggingConfig.self, forKey: .logging) ?? LoggingConfig()
         daemon = try container.decodeIfPresent(DaemonConfig.self, forKey: .daemon) ?? DaemonConfig()
+        notifications = try container.decodeIfPresent(NotificationConfig.self, forKey: .notifications) ?? NotificationConfig()
     }
 
     enum CodingKeys: String, CodingKey {
-        case source, destination, sync, state, logging, daemon
+        case source, destination, sync, state, logging, daemon, notifications
     }
 
     /// Source ICS configuration
@@ -157,6 +160,34 @@ struct Configuration: Codable, Sendable {
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             intervalMinutes = try container.decodeIfPresent(Int.self, forKey: .intervalMinutes) ?? 15
+        }
+    }
+
+    /// Notification configuration
+    struct NotificationConfig: Codable, Sendable {
+        var enabled: Bool = false
+        var onSuccess: Bool = false
+        var onFailure: Bool = true
+        var onPartial: Bool = true
+        var sound: String? = "default"
+
+        enum CodingKeys: String, CodingKey {
+            case enabled
+            case onSuccess = "on_success"
+            case onFailure = "on_failure"
+            case onPartial = "on_partial"
+            case sound
+        }
+
+        init() {}
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+            onSuccess = try container.decodeIfPresent(Bool.self, forKey: .onSuccess) ?? false
+            onFailure = try container.decodeIfPresent(Bool.self, forKey: .onFailure) ?? true
+            onPartial = try container.decodeIfPresent(Bool.self, forKey: .onPartial) ?? true
+            sound = try container.decodeIfPresent(String.self, forKey: .sound) ?? "default"
         }
     }
 }
@@ -420,6 +451,31 @@ extension Configuration {
 
         func addHeader(_ key: String, value: String) -> Builder {
             config.source.headers[key] = value
+            return self
+        }
+
+        func setNotificationsEnabled(_ enabled: Bool) -> Builder {
+            config.notifications.enabled = enabled
+            return self
+        }
+
+        func setNotifyOnSuccess(_ notify: Bool) -> Builder {
+            config.notifications.onSuccess = notify
+            return self
+        }
+
+        func setNotifyOnFailure(_ notify: Bool) -> Builder {
+            config.notifications.onFailure = notify
+            return self
+        }
+
+        func setNotifyOnPartial(_ notify: Bool) -> Builder {
+            config.notifications.onPartial = notify
+            return self
+        }
+
+        func setNotificationSound(_ sound: String?) -> Builder {
+            config.notifications.sound = sound
             return self
         }
 
