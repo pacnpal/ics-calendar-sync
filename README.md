@@ -27,51 +27,46 @@ Download the latest release from the [Releases page](https://github.com/pacnpal/
 
 #### Which binary should I download?
 
-**To check your Mac type:** Click the Apple menu and select "About This Mac"
-- If it says "Chip: Apple M1/M2/M3/M4" you have **Apple Silicon**
-- If it says "Processor: Intel" you have **Intel**
-- If unsure, download the **Universal** binary (works on all Macs)
-
-| Your Mac | Download |
-|----------|----------|
-| Apple Silicon (M1/M2/M3/M4) | `ics-calendar-sync-arm64-vX.X.X.zip` |
-| Intel | `ics-calendar-sync-x86_64-vX.X.X.zip` |
-| Not sure / Want one binary for all Macs | `ics-calendar-sync-universal-vX.X.X.zip` |
+| Your Mac | Download | How to check |
+|----------|----------|--------------|
+| Apple Silicon | `arm64` | Apple menu > About This Mac shows "Chip: Apple M1/M2/M3/M4" |
+| Intel | `x86_64` | Apple menu > About This Mac shows "Processor: Intel" |
+| **Not sure** | `universal` | Works on all Macs |
 
 #### Installation steps
 
 1. Download the appropriate `.zip` file from the [Releases page](https://github.com/pacnpal/ics-calendar-sync/releases)
-2. Double-click to extract, or run: `unzip ics-calendar-sync-*.zip`
-3. Open Terminal and run:
+
+2. Open Terminal and run the following commands (assuming downloaded to ~/Downloads):
 
 ```bash
-chmod +x ics-calendar-sync-*
-sudo mv ics-calendar-sync-* /usr/local/bin/ics-calendar-sync
-```
+# Extract the zip (replace ARCH with arm64, x86_64, or universal)
+cd ~/Downloads
+unzip ics-calendar-sync-ARCH-v1.0.0.zip
 
-4. Verify installation: `ics-calendar-sync --version`
+# Remove quarantine attribute
+xattr -d com.apple.quarantine ics-calendar-sync-*
+
+# Install to /usr/local/bin
+sudo mv ics-calendar-sync-* /usr/local/bin/ics-calendar-sync
+
+# Verify installation
+ics-calendar-sync --version
+```
 
 #### macOS Security Warning
 
-macOS quarantines files downloaded from the internet. You have two options:
+macOS quarantines files downloaded from the internet. The `xattr` command above removes this. If you skip that step, you have two alternatives:
 
-**Option 1: Remove quarantine attribute (recommended)**
-
-After extracting, run this command before moving the binary:
-
-```bash
-xattr -d com.apple.quarantine ics-calendar-sync-*
-```
-
-**Option 2: Right-click to open (macOS 15 and earlier)**
+**Option 1: Right-click to open (macOS 14 and earlier)**
 
 1. Right-click (or Control-click) the binary in Finder
 2. Select **Open** from the context menu
 3. Click **Open** in the dialog
 
-Note: This method does not work on macOS 26 and later.
+Note: This method does not work on macOS 15 or later.
 
-**Option 3: Allow via System Settings**
+**Option 2: Allow via System Settings**
 
 If you see "cannot be opened because it is from an unidentified developer":
 
