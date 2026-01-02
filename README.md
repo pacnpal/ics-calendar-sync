@@ -548,17 +548,136 @@ If you continue to have calendar access problems:
 4. Check if events are in date window (default: 30 days past, 365 days future)
 5. Verify the ICS URL is accessible: `curl -I "your-ics-url"`
 
-### Service Not Running
+### Background Service & Daemon
+
+#### Checking if the Service is Running
 
 ```bash
-# Check status
+# Check if the service is loaded and running
 launchctl list | grep ics-calendar-sync
 
-# View any errors
-cat ~/Library/Logs/ics-calendar-sync/stderr.log
+# Expected output when running:
+# 12345  0  com.ics-calendar-sync
+# (PID)  (exit code)  (label)
 
-# Try running manually to see errors
-ics-calendar-sync daemon
+# If no output, the service is not loaded
+```
+
+#### Service Not Starting
+
+If `ics-calendar-sync install` succeeded but the service isn't running:
+
+1. **Check if the plist exists:**
+   ```bash
+   ls -la ~/Library/LaunchAgents/com.ics-calendar-sync.plist
+   ```
+
+2. **Verify the plist is valid:**
+   ```bash
+   plutil -lint ~/Library/LaunchAgents/com.ics-calendar-sync.plist
+   ```
+
+3. **Check launchd for errors:**
+   ```bash
+   launchctl error $(launchctl list | grep ics-calendar-sync | awk '{print $2}')
+   ```
+
+4. **View service logs:**
+   ```bash
+   cat ~/Library/Logs/ics-calendar-sync/stderr.log
+   cat ~/Library/Logs/ics-calendar-sync/stdout.log
+   ```
+
+5. **Try running manually to see errors:**
+   ```bash
+   ics-calendar-sync daemon
+   ```
+
+#### Manually Starting/Stopping the Service
+
+```bash
+# Stop the service
+launchctl unload ~/Library/LaunchAgents/com.ics-calendar-sync.plist
+
+# Start the service
+launchctl load ~/Library/LaunchAgents/com.ics-calendar-sync.plist
+
+# Restart (stop then start)
+launchctl unload ~/Library/LaunchAgents/com.ics-calendar-sync.plist && \
+launchctl load ~/Library/LaunchAgents/com.ics-calendar-sync.plist
+```
+
+#### Service Keeps Stopping
+
+If the service starts but stops unexpectedly:
+
+1. **Check exit codes:**
+   ```bash
+   launchctl list | grep ics-calendar-sync
+   # Second column shows last exit code (0 = success)
+   ```
+
+2. **Common exit codes:**
+   - `0`: Normal exit
+   - `1`: General error (check stderr.log)
+   - `78`: Configuration error
+   - `126`: Permission denied
+
+3. **Check for crash logs:**
+   ```bash
+   ls ~/Library/Logs/DiagnosticReports/ | grep ics-calendar-sync
+   ```
+
+#### Reinstalling the Service
+
+If the service is in a bad state:
+
+```bash
+# Uninstall completely
+ics-calendar-sync uninstall
+
+# Verify removal
+launchctl list | grep ics-calendar-sync
+ls ~/Library/LaunchAgents/com.ics-calendar-sync.plist
+
+# Reinstall
+ics-calendar-sync install
+```
+
+#### Service Not Syncing Events
+
+If the service is running but events aren't syncing:
+
+1. **Check sync status:**
+   ```bash
+   ics-calendar-sync status
+   ```
+
+2. **Verify calendar permissions** (see [Calendar Access](#calendar-access) above)
+
+3. **Check the logs for sync errors:**
+   ```bash
+   tail -100 ~/Library/Logs/ics-calendar-sync/stdout.log
+   ```
+
+4. **Test manual sync:**
+   ```bash
+   ics-calendar-sync sync -v
+   ```
+
+#### Viewing Live Logs
+
+To watch the service logs in real-time:
+
+```bash
+# Watch stdout
+tail -f ~/Library/Logs/ics-calendar-sync/stdout.log
+
+# Watch stderr
+tail -f ~/Library/Logs/ics-calendar-sync/stderr.log
+
+# Watch both
+tail -f ~/Library/Logs/ics-calendar-sync/*.log
 ```
 
 ### SSL Certificate Errors
