@@ -16,13 +16,19 @@ actor NotificationManager {
     /// Send a macOS notification
     /// - Parameters:
     ///   - title: The notification title
+    ///   - subtitle: Optional subtitle (shown below title, smaller text)
     ///   - message: The notification body text
     ///   - sound: Optional sound name (from /System/Library/Sounds or ~/Library/Sounds), nil for no sound
-    func send(title: String, message: String, sound: String? = "default") async {
+    func send(title: String, subtitle: String? = nil, message: String, sound: String? = "default") async {
         let escapedTitle = escapeForAppleScript(title)
         let escapedMessage = escapeForAppleScript(message)
 
         var script = "display notification \"\(escapedMessage)\" with title \"\(escapedTitle)\""
+
+        if let subtitle = subtitle {
+            let escapedSubtitle = escapeForAppleScript(subtitle)
+            script += " subtitle \"\(escapedSubtitle)\""
+        }
 
         if let sound = sound {
             let escapedSound = escapeForAppleScript(sound)
@@ -53,44 +59,119 @@ actor NotificationManager {
 
     /// Send a sync success notification
     func sendSyncSuccess(created: Int, updated: Int, deleted: Int, unchanged: Int, sound: String? = "default") async {
-        let title = "Sync Complete"
+        let title = "Calendar Sync Complete"
+        let total = created + updated + deleted + unchanged
 
-        var parts: [String] = []
-        if created > 0 { parts.append("\(created) created") }
-        if updated > 0 { parts.append("\(updated) updated") }
-        if deleted > 0 { parts.append("\(deleted) deleted") }
+        // Build detailed change summary
+        var changes: [String] = []
+        if created > 0 { changes.append("+\(created) new") }
+        if updated > 0 { changes.append("\(updated) updated") }
+        if deleted > 0 { changes.append("-\(deleted) removed") }
 
+        let subtitle: String?
         let message: String
-        if parts.isEmpty {
-            message = "No changes detected"
+
+        if changes.isEmpty {
+            subtitle = "No changes"
+            message = "\(total) event\(total == 1 ? "" : "s") up to date"
         } else {
-            message = parts.joined(separator: ", ")
+            subtitle = changes.joined(separator: ", ")
+            if unchanged > 0 {
+                message = "\(unchanged) event\(unchanged == 1 ? "" : "s") unchanged"
+            } else {
+                message = "\(total) event\(total == 1 ? "" : "s") processed"
+            }
         }
 
-        await send(title: title, message: message, sound: sound)
+        await send(title: title, subtitle: subtitle, message: message, sound: sound)
     }
 
     /// Send a sync partial success notification (completed with some errors)
-    func sendSyncPartial(created: Int, updated: Int, deleted: Int, errorCount: Int, sound: String? = "default") async {
-        let total = created + updated + deleted
-        let title = "Sync Completed with Errors"
-        let message = "\(total) events synced, \(errorCount) error\(errorCount == 1 ? "" : "s")"
+    func sendSyncPartial(created: Int, updated: Int, deleted: Int, errorCount: Int, errorMessages: [String] = [], sound: String? = "default") async {
+        let title = "Calendar Sync Incomplete"
+        let successCount = created + updated + deleted
 
-        await send(title: title, message: message, sound: sound)
+        // Build change summary for subtitle
+        var changes: [String] = []
+        if created > 0 { changes.append("+\(created) new") }
+        if updated > 0 { changes.append("\(updated) updated") }
+        if deleted > 0 { changes.append("-\(deleted) removed") }
+
+        let subtitle: String
+        if changes.isEmpty {
+            subtitle = "\(errorCount) error\(errorCount == 1 ? "" : "s")"
+        } else {
+            subtitle = "\(changes.joined(separator: ", ")) | \(errorCount) error\(errorCount == 1 ? "" : "s")"
+        }
+
+        // Include first error message if available
+        let message: String
+        if let firstError = errorMessages.first {
+            let truncated = firstError.count > 80 ? String(firstError.prefix(77)) + "..." : firstError
+            message = truncated
+        } else {
+            message = "\(successCount) event\(successCount == 1 ? "" : "s") synced, \(errorCount) failed"
+        }
+
+        await send(title: title, subtitle: subtitle, message: message, sound: sound)
     }
 
     /// Send a sync failure notification
     func sendSyncFailure(errorMessage: String, sound: String? = "default") async {
-        let title = "Sync Failed"
-        // Truncate long error messages
-        let message = errorMessage.count > 100
-            ? String(errorMessage.prefix(97)) + "..."
-            : errorMessage
+        let title = "Calendar Sync Failed"
 
-        await send(title: title, message: message, sound: sound)
+        // Clean up and format error message
+        let cleanedError = cleanErrorMessage(errorMessage)
+
+        // Split into subtitle (error type) and message (details) if possible
+        let subtitle: String?
+        let message: String
+
+        if let colonIndex = cleanedError.firstIndex(of: ":") {
+            let errorType = String(cleanedError[..<colonIndex]).trimmingCharacters(in: .whitespaces)
+            let errorDetail = String(cleanedError[cleanedError.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
+
+            if errorType.count < 40 && !errorDetail.isEmpty {
+                subtitle = errorType
+                message = errorDetail.count > 100 ? String(errorDetail.prefix(97)) + "..." : errorDetail
+            } else {
+                subtitle = nil
+                message = cleanedError.count > 100 ? String(cleanedError.prefix(97)) + "..." : cleanedError
+            }
+        } else {
+            subtitle = nil
+            message = cleanedError.count > 100 ? String(cleanedError.prefix(97)) + "..." : cleanedError
+        }
+
+        await send(title: title, subtitle: subtitle, message: message, sound: sound)
     }
 
     // MARK: - Private Methods
+
+    /// Clean up common error message patterns for display
+    private func cleanErrorMessage(_ message: String) -> String {
+        var cleaned = message
+
+        // Remove common verbose prefixes
+        let prefixesToRemove = [
+            "The operation couldn't be completed. ",
+            "Error Domain=",
+            "NSCocoaErrorDomain Code=",
+            "NSURLErrorDomain Code="
+        ]
+
+        for prefix in prefixesToRemove {
+            if cleaned.hasPrefix(prefix) {
+                cleaned = String(cleaned.dropFirst(prefix.count))
+            }
+        }
+
+        // Clean up URL error messages
+        cleaned = cleaned.replacingOccurrences(of: "NSLocalizedDescription=", with: "")
+        cleaned = cleaned.replacingOccurrences(of: "NSUnderlyingError=", with: "")
+
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     /// Escape special characters for AppleScript string
     private func escapeForAppleScript(_ string: String) -> String {

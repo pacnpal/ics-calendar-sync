@@ -99,11 +99,13 @@ actor Daemon {
 
                 // Send partial success notification
                 if notificationConfig.enabled && notificationConfig.onPartial {
+                    let errorMessages = result.errors.map { $0.message }
                     await notificationManager.sendSyncPartial(
                         created: result.created,
                         updated: result.updated,
                         deleted: result.deleted,
                         errorCount: result.errors.count,
+                        errorMessages: errorMessages,
                         sound: notificationConfig.sound
                     )
                 }
