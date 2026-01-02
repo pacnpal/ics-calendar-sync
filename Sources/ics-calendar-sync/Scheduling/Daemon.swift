@@ -33,7 +33,8 @@ actor Daemon {
 
         // Setup signal handlers
         SignalHandler.shared.setup { [weak self] in
-            Task { await self?.stop() }
+            guard let daemon = self else { return }
+            Task { await daemon.stop() }
         }
 
         // Perform initial sync
