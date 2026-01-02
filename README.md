@@ -63,7 +63,15 @@ After extracting, run this command before moving the binary:
 xattr -d com.apple.quarantine ics-calendar-sync-*
 ```
 
-**Option 2: Allow via System Settings**
+**Option 2: Right-click to open (macOS 15 and earlier)**
+
+1. Right-click (or Control-click) the binary in Finder
+2. Select **Open** from the context menu
+3. Click **Open** in the dialog
+
+Note: This method does not work on macOS 26 and later.
+
+**Option 3: Allow via System Settings**
 
 If you see "cannot be opened because it is from an unidentified developer":
 
