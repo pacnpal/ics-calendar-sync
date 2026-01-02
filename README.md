@@ -48,7 +48,7 @@ unzip ics-calendar-sync-ARCH-v1.0.0.zip
 xattr -d com.apple.quarantine ics-calendar-sync-*
 
 # Install to /usr/local/bin
-sudo mv ics-calendar-sync-* /usr/local/bin/ics-calendar-sync
+sudo install -m 755 ics-calendar-sync-* /usr/local/bin/ics-calendar-sync
 
 # Verify installation
 ics-calendar-sync --version
