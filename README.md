@@ -53,7 +53,13 @@ A robust, enterprise-quality Swift tool that synchronizes events from ICS calend
 
 #### Option 1: Download Pre-built App
 
-Download `ICS.Calendar.Sync.app.zip` from the [Releases page](https://github.com/pacnpal/ics-calendar-sync/releases).
+Download the macOS App from the [Releases page](https://github.com/pacnpal/ics-calendar-sync/releases):
+
+| Your Mac | Download |
+|----------|----------|
+| Apple Silicon (M1/M2/M3/M4) | `ICS-Calendar-Sync-macOS-App-arm64-v2.0.0.zip` |
+| Intel | `ICS-Calendar-Sync-macOS-App-x86_64-v2.0.0.zip` |
+| **Not sure** | `ICS-Calendar-Sync-macOS-App-universal-v2.0.0.zip` |
 
 1. Extract the zip file
 2. Drag **ICS Calendar Sync.app** to your Applications folder
@@ -95,14 +101,14 @@ Download the latest release from the [Releases page](https://github.com/pacnpal/
 
 | Your Mac | Download | How to check |
 |----------|----------|--------------|
-| Apple Silicon | `arm64` | Apple menu > About This Mac shows "Chip: Apple M1/M2/M3/M4" |
-| Intel | `x86_64` | Apple menu > About This Mac shows "Processor: Intel" |
-| **Not sure** | `universal` | Works on all Macs |
+| Apple Silicon | `ics-calendar-sync-cli-arm64-v2.0.0.zip` | Apple menu > About This Mac shows "Chip: Apple M1/M2/M3/M4" |
+| Intel | `ics-calendar-sync-cli-x86_64-v2.0.0.zip` | Apple menu > About This Mac shows "Processor: Intel" |
+| **Not sure** | `ics-calendar-sync-cli-universal-v2.0.0.zip` | Works on all Macs |
 
 ```bash
 # Extract the zip (replace ARCH with arm64, x86_64, or universal)
 cd ~/Downloads
-unzip ics-calendar-sync-ARCH-v2.0.0.zip
+unzip ics-calendar-sync-cli-ARCH-v2.0.0.zip
 
 # Remove quarantine attribute
 xattr -d com.apple.quarantine ics-calendar-sync-*
