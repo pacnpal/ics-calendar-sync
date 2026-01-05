@@ -43,7 +43,7 @@ Download the latest release from the [Releases page](https://github.com/pacnpal/
 ```bash
 # Extract the zip (replace ARCH with arm64, x86_64, or universal)
 cd ~/Downloads
-unzip ics-calendar-sync-ARCH-v1.1.0.zip
+unzip ics-calendar-sync-ARCH-v1.1.1.zip
 
 # Remove quarantine attribute
 xattr -d com.apple.quarantine ics-calendar-sync-*
@@ -144,6 +144,7 @@ ics-calendar-sync install
 | `list` | List events currently tracked |
 | `calendars` | List available calendars |
 | `reset` | Reset sync state (requires `--force`) |
+| `migrate` | Add UID markers to existing calendar events |
 | `install` | Install as launchd background service |
 | `uninstall` | Remove launchd background service |
 
@@ -194,6 +195,34 @@ ics-calendar-sync install
 ```
 --force                Required to confirm reset operation
 ```
+
+#### migrate
+
+The `migrate` command adds UID markers to existing calendar events that were created before the bulletproof deduplication system was implemented. This ensures all events can be reliably tracked even if iCloud changes their EventKit identifiers.
+
+```bash
+# Dry run first (recommended) - shows what would be migrated
+ics-calendar-sync migrate --dry-run
+
+# Run migration
+ics-calendar-sync migrate
+
+# With verbose output (shows unmatched events)
+ics-calendar-sync migrate -v
+```
+
+The command:
+1. Fetches all events from your ICS source
+2. Gets all events from your target calendar
+3. For each calendar event without a `[ICS-SYNC-UID:...]` marker:
+   - Matches it to an ICS event by title and date (exact or fuzzy)
+   - Updates the event to add the UID marker
+
+Output shows:
+- `Already has UID`: Events that were previously migrated
+- `Migrated`: Events that got UID markers added
+- `No ICS match`: Calendar events not in your ICS (manually created or from a different source)
+- `Errors`: Any failed updates
 
 ### Examples
 
@@ -843,7 +872,7 @@ swift test --filter ICSParserTests/testBasicEvent
 
 ## Version
 
-Current version: 1.1.0
+Current version: 1.1.1
 
 ## License
 

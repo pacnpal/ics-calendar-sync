@@ -1,4 +1,5 @@
 import ArgumentParser
+import EventKit
 import Foundation
 
 // MARK: - Root Command
@@ -8,7 +9,7 @@ struct ICSCalendarSync: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ics-calendar-sync",
         abstract: "Sync ICS calendar subscriptions to macOS Calendar",
-        version: "1.1.0",
+        version: "1.1.1",
         subcommands: [
             SetupCommand.self,
             ConfigureCommand.self,
@@ -22,6 +23,7 @@ struct ICSCalendarSync: AsyncParsableCommand {
             ListCommand.self,
             CalendarsCommand.self,
             ResetCommand.self,
+            MigrateCommand.self,
             InstallCommand.self,
             UninstallCommand.self,
         ],
@@ -505,6 +507,187 @@ struct ResetCommand: AsyncParsableCommand {
 
         logger.success("Sync state has been reset")
         logger.info("Next sync will treat all events as new")
+    }
+}
+
+// MARK: - Migrate Command
+
+struct MigrateCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "migrate",
+        abstract: "Add UID markers to existing calendar events for bulletproof deduplication"
+    )
+
+    @OptionGroup var global: GlobalOptions
+
+    mutating func run() async throws {
+        global.configureLogger()
+        let logger = Logger.shared
+
+        logger.info("Starting UID migration...")
+
+        // Load configuration
+        let configManager = ConfigurationManager.shared
+        let config = try await configManager.load(from: global.configPath)
+
+        // Initialize calendar manager
+        let calendarManager = CalendarManager()
+        try await calendarManager.requestAccess()
+
+        // Find target calendar
+        guard let calendar = await calendarManager.findCalendar(named: config.destination.calendarName) else {
+            logger.error("Calendar not found: \(config.destination.calendarName)")
+            throw ExitCode.failure
+        }
+
+        logger.info("Using calendar: \(calendar.title)")
+
+        // Fetch and parse ICS
+        logger.info("Fetching ICS from \(config.source.url)...")
+        guard let url = URL(string: config.source.url) else {
+            throw ICSError.invalidURL(config.source.url)
+        }
+
+        let icsFetcher = ICSFetcher()
+        let fetchConfig = config.getFetchConfig()
+        let icsContent = try await icsFetcher.fetch(from: url, config: fetchConfig)
+
+        let icsParser = ICSParser()
+        let icsEvents = try await icsParser.parse(icsContent)
+        logger.info("Parsed \(icsEvents.count) events from ICS")
+
+        // Build lookup map for ICS events by title+date
+        var icsLookup: [String: ICSEvent] = [:]
+        for event in icsEvents {
+            let key = makeMatchKey(title: event.summary, startDate: event.startDate, isAllDay: event.isAllDay)
+            icsLookup[key] = event
+        }
+
+        // Get ALL events from calendar (wide range)
+        let searchStart = Date().addingTimeInterval(-100 * 365 * 24 * 60 * 60)
+        let searchEnd = Date().addingTimeInterval(50 * 365 * 24 * 60 * 60)
+        let calendarEvents = await calendarManager.getEvents(in: calendar, from: searchStart, to: searchEnd)
+
+        logger.info("Found \(calendarEvents.count) events in calendar")
+
+        // Process events
+        var migrated = 0
+        var alreadyHasUID = 0
+        var noMatch = 0
+        var errors = 0
+
+        let mappingConfig = config.getMappingConfig()
+
+        for ekEvent in calendarEvents {
+            // Check if already has UID marker
+            if EventMapper.containsUIDMarker(ekEvent.notes) {
+                alreadyHasUID += 1
+                continue
+            }
+
+            // Try to match to ICS event
+            let key = makeMatchKey(title: ekEvent.title, startDate: ekEvent.startDate, isAllDay: ekEvent.isAllDay)
+
+            if let icsEvent = icsLookup[key] {
+                // Found match - update event to add UID marker
+                if global.dryRun {
+                    logger.info("Would migrate: \(ekEvent.title ?? "(No Title)")")
+                    migrated += 1
+                } else {
+                    do {
+                        try await calendarManager.updateEvent(ekEvent, from: icsEvent, config: mappingConfig)
+                        logger.info("Migrated: \(ekEvent.title ?? "(No Title)")")
+                        migrated += 1
+                    } catch {
+                        logger.error("Failed to migrate \(ekEvent.title ?? "(No Title)"): \(error)")
+                        errors += 1
+                    }
+                }
+            } else {
+                // Try fuzzy match (within 5 minute tolerance)
+                if let icsEvent = findFuzzyMatch(for: ekEvent, in: icsEvents, config: mappingConfig) {
+                    if global.dryRun {
+                        logger.info("Would migrate (fuzzy): \(ekEvent.title ?? "(No Title)")")
+                        migrated += 1
+                    } else {
+                        do {
+                            try await calendarManager.updateEvent(ekEvent, from: icsEvent, config: mappingConfig)
+                            logger.info("Migrated (fuzzy): \(ekEvent.title ?? "(No Title)")")
+                            migrated += 1
+                        } catch {
+                            logger.error("Failed to migrate \(ekEvent.title ?? "(No Title)"): \(error)")
+                            errors += 1
+                        }
+                    }
+                } else {
+                    noMatch += 1
+                    if global.verbose >= 1 {
+                        logger.debug("No match for: \(ekEvent.title ?? "(No Title)") at \(ekEvent.startDate.formatted())")
+                    }
+                }
+            }
+        }
+
+        // Report results
+        logger.separator()
+        print("Migration Summary:")
+        print("  Already has UID: \(alreadyHasUID)")
+        print("  Migrated:        \(migrated)")
+        print("  No ICS match:    \(noMatch)")
+        print("  Errors:          \(errors)")
+
+        if global.dryRun {
+            logger.info("Dry run - no changes were made")
+        }
+
+        if noMatch > 0 {
+            logger.warning("\(noMatch) events had no matching ICS event - these may be manually created or from a different source")
+        }
+    }
+
+    private func makeMatchKey(title: String?, startDate: Date, isAllDay: Bool) -> String {
+        let normalizedTitle = (title ?? "").lowercased().trimmingCharacters(in: .whitespaces)
+        let dateFormatter = ISO8601DateFormatter()
+        if isAllDay {
+            // For all-day events, just use the date part
+            let calendar = Calendar.current
+            let components = calendar.dateComponents([.year, .month, .day], from: startDate)
+            return "\(normalizedTitle)|\(components.year!)-\(components.month!)-\(components.day!)|allday"
+        } else {
+            return "\(normalizedTitle)|\(dateFormatter.string(from: startDate))"
+        }
+    }
+
+    private func findFuzzyMatch(for ekEvent: EKEvent, in icsEvents: [ICSEvent], config: EventMapper.MappingConfig) -> ICSEvent? {
+        let timeTolerance: TimeInterval = 300 // 5 minutes
+        let ekTitle = (ekEvent.title ?? "").lowercased()
+        let expectedPrefix = config.summaryPrefix.lowercased()
+
+        for icsEvent in icsEvents {
+            let icsTitle = (icsEvent.summary ?? "").lowercased()
+            let expectedTitle = expectedPrefix + icsTitle
+
+            // Title match: either exact, contains, or with prefix
+            let titleMatch = ekTitle == icsTitle ||
+                             ekTitle == expectedTitle ||
+                             ekTitle.contains(icsTitle) ||
+                             icsTitle.contains(ekTitle)
+
+            guard titleMatch else { continue }
+
+            // isAllDay must match
+            guard ekEvent.isAllDay == icsEvent.isAllDay else { continue }
+
+            // Time within tolerance
+            let startDiff = abs(ekEvent.startDate.timeIntervalSince(icsEvent.startDate))
+            let endDiff = abs(ekEvent.endDate.timeIntervalSince(icsEvent.endDate))
+
+            if startDiff <= timeTolerance && endDiff <= timeTolerance {
+                return icsEvent
+            }
+        }
+
+        return nil
     }
 }
 
