@@ -52,6 +52,11 @@ actor CalendarManager {
         }
     }
 
+    /// Async check if calendar access is still valid (re-checks system status)
+    func hasAccess() async -> Bool {
+        return checkAccess()
+    }
+
     /// Get authorization status description
     func getAuthorizationStatusDescription() -> String {
         let status = EKEventStore.authorizationStatus(for: .event)

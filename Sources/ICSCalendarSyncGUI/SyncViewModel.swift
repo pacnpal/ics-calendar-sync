@@ -887,6 +887,8 @@ class SyncViewModel: ObservableObject {
     func saveConfig() async {
         deps.logger.info("Saving configuration")
 
+        let wasServiceRunning = isServiceRunning
+
         do {
             // Custom encoding to handle the config properly
             var configDict: [String: Any] = [
@@ -918,6 +920,14 @@ class SyncViewModel: ObservableObject {
 
             lastError = nil
             deps.logger.info("Configuration saved: \(feeds.count) feeds")
+
+            // Restart daemon if it was running so it picks up new config
+            if wasServiceRunning && isServiceInstalled {
+                deps.logger.info("Restarting daemon to apply config changes...")
+                await stopService()
+                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+                await startService()
+            }
         } catch {
             deps.logger.error("Failed to save config: \(error.localizedDescription)")
             lastError = "Failed to save configuration: \(error.localizedDescription)"
@@ -1085,6 +1095,17 @@ class SyncViewModel: ObservableObject {
             return false
         }
 
+        // Verify we have at least one feed
+        guard feeds.first(where: { $0.isEnabled }) != nil || !feeds.isEmpty else {
+            lastError = "No feeds configured. Please add a feed first."
+            deps.logger.error(lastError!)
+            return false
+        }
+
+        // Use the unified GUI config path directly (CLI now understands GUI format)
+        let configPath = deps.configPath
+        deps.logger.info("Using unified config at \(configPath)")
+
         // Create log directory
         let fm = FileManager.default
         if !fm.fileExists(atPath: Self.logDir) {
@@ -1109,8 +1130,8 @@ class SyncViewModel: ObservableObject {
             }
         }
 
-        // Generate plist content
-        let plistContent = generateLaunchAgentPlist(cliPath: cliPath)
+        // Generate plist content with unified config path
+        let plistContent = generateLaunchAgentPlist(cliPath: cliPath, configPath: configPath)
 
         // Write plist file
         do {
@@ -1233,7 +1254,7 @@ class SyncViewModel: ObservableObject {
     }
 
     /// Generate the LaunchAgent plist content
-    private func generateLaunchAgentPlist(cliPath: String) -> String {
+    private func generateLaunchAgentPlist(cliPath: String, configPath: String) -> String {
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1247,7 +1268,7 @@ class SyncViewModel: ObservableObject {
                 <string>\(cliPath)</string>
                 <string>daemon</string>
                 <string>--config</string>
-                <string>\(deps.configPath)</string>
+                <string>\(configPath)</string>
             </array>
 
             <key>RunAtLoad</key>
@@ -1347,7 +1368,7 @@ class SyncViewModel: ObservableObject {
             "notifications_enabled": notificationsEnabled,
             "global_sync_interval": 15,
             "default_calendar": defaultCalendar,
-            "version": "2.0.1"
+            "version": "2.1.0"
         ]
 
         let feedsArray = feeds.map { feed -> [String: Any] in

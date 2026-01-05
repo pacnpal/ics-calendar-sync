@@ -30,6 +30,45 @@ struct SyncResult: Sendable {
     }
 }
 
+// MARK: - Sync Lock
+
+/// File-based lock to prevent concurrent syncs
+final class SyncLock {
+    private let lockPath: String
+    private let logger = Logger.shared
+    private static let staleThreshold: TimeInterval = 300 // 5 minutes
+
+    init() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        self.lockPath = "\(home)/.config/ics-calendar-sync/.sync.lock"
+    }
+
+    func acquire() throws {
+        let fm = FileManager.default
+
+        // Check for existing lock
+        if fm.fileExists(atPath: lockPath) {
+            // Check if lock is stale (older than threshold)
+            if let attrs = try? fm.attributesOfItem(atPath: lockPath),
+               let modDate = attrs[.modificationDate] as? Date,
+               Date().timeIntervalSince(modDate) > Self.staleThreshold {
+                logger.warning("Removing stale sync lock (>\(Int(Self.staleThreshold))s old)")
+                try? fm.removeItem(atPath: lockPath)
+            } else {
+                throw SyncError.syncInProgress
+            }
+        }
+
+        // Create lock file with current PID
+        let lockContent = "\(ProcessInfo.processInfo.processIdentifier)"
+        try lockContent.write(toFile: lockPath, atomically: true, encoding: .utf8)
+    }
+
+    func release() {
+        try? FileManager.default.removeItem(atPath: lockPath)
+    }
+}
+
 // MARK: - Sync Engine
 
 /// Orchestrates the delta sync process between ICS source and calendar
@@ -40,6 +79,7 @@ actor SyncEngine {
     private let icsParser: ICSParser
     private let icsFetcher: ICSFetcher
     private let logger = Logger.shared
+    private let syncLock = SyncLock()
 
     init(config: Configuration) throws {
         self.config = config
@@ -60,11 +100,27 @@ actor SyncEngine {
         try await stateStore.initialize()
     }
 
+    /// Gracefully shutdown the sync engine
+    func shutdown() async {
+        logger.debug("Shutting down sync engine")
+        await stateStore.close()
+        syncLock.release()
+    }
+
     // MARK: - Main Sync
 
     /// Perform a full sync operation
     func sync(dryRun: Bool = false, fullSync: Bool = false) async throws -> SyncResult {
         var result = SyncResult()
+
+        // Acquire sync lock to prevent concurrent syncs
+        try syncLock.acquire()
+        defer { syncLock.release() }
+
+        // Verify calendar access is still valid
+        guard await calendarManager.hasAccess() else {
+            throw SyncError.calendarAccessRevoked
+        }
 
         // Record sync start
         let syncId = try await stateStore.recordSyncStart()
@@ -167,21 +223,33 @@ actor SyncEngine {
                 }
             }
 
-            // Step 6: Handle deletions (orphans)
+            // Step 6: Handle deletions (orphans) with safety checks
             if config.sync.deleteOrphans {
                 let orphanUIDs = currentUIDs.subtracting(incomingUIDs)
 
-                for uid in orphanUIDs {
-                    do {
-                        try await processDeletedEvent(uid: uid, currentState: currentState, dryRun: dryRun)
-                        result.deleted += 1
-                    } catch {
-                        logger.error("Failed to delete orphan \(uid): \(error)")
-                        result.errors.append(SyncResult.SyncEventError(
-                            uid: uid,
-                            operation: "delete",
-                            message: error.localizedDescription
-                        ))
+                // SAFETY: Protect against empty/failed ICS feeds deleting all events
+                if filteredEvents.isEmpty && !currentState.isEmpty {
+                    logger.warning("ICS feed returned 0 events but \(currentState.count) events exist - skipping deletion to prevent data loss")
+                } else if orphanUIDs.count > 0 && orphanUIDs.count == currentState.count && currentState.count > 5 {
+                    // All existing events would be deleted - likely a feed error
+                    logger.warning("All \(currentState.count) events would be deleted - skipping deletion as this likely indicates a feed error")
+                } else if currentState.count > 10 && orphanUIDs.count > Int(Double(currentState.count) * 0.9) {
+                    // More than 90% of events would be deleted - suspicious
+                    logger.warning("Would delete \(orphanUIDs.count) of \(currentState.count) events (>\(90)%) - skipping deletion as this may indicate a feed error")
+                } else {
+                    // Safe to proceed with deletions
+                    for uid in orphanUIDs {
+                        do {
+                            try await processDeletedEvent(uid: uid, currentState: currentState, dryRun: dryRun)
+                            result.deleted += 1
+                        } catch {
+                            logger.error("Failed to delete orphan \(uid): \(error)")
+                            result.errors.append(SyncResult.SyncEventError(
+                                uid: uid,
+                                operation: "delete",
+                                message: error.localizedDescription
+                            ))
+                        }
                     }
                 }
             }

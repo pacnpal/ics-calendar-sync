@@ -9,7 +9,7 @@ struct ICSCalendarSync: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ics-calendar-sync",
         abstract: "Sync ICS calendar subscriptions to macOS Calendar",
-        version: "2.0.1",
+        version: "2.1.0",
         subcommands: [
             SetupCommand.self,
             ConfigureCommand.self,

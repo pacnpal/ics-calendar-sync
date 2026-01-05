@@ -209,7 +209,7 @@ actor ConfigurationManager {
 
     // MARK: - Loading
 
-    /// Load configuration from file
+    /// Load configuration from file (supports both CLI and GUI formats)
     func load(from path: String) throws -> Configuration {
         let expandedPath = path.expandingTildeInPath
         let url = URL(fileURLWithPath: expandedPath)
@@ -220,8 +220,18 @@ actor ConfigurationManager {
 
         let data = try Data(contentsOf: url)
 
-        let decoder = JSONDecoder()
-        var config = try decoder.decode(Configuration.self, from: data)
+        // Try to detect config format
+        var config: Configuration
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let feeds = json["feeds"] as? [[String: Any]] {
+            // GUI format detected - convert to CLI format
+            logger.debug("Detected GUI config format, converting...")
+            config = try convertGUIConfig(json: json, feeds: feeds)
+        } else {
+            // Standard CLI format
+            let decoder = JSONDecoder()
+            config = try decoder.decode(Configuration.self, from: data)
+        }
 
         // Expand environment variables in sensitive fields
         config = expandEnvironmentVariables(in: config)
@@ -231,6 +241,52 @@ actor ConfigurationManager {
 
         self.config = config
         logger.debug("Loaded configuration from \(expandedPath)")
+        return config
+    }
+
+    /// Convert GUI config format to CLI Configuration
+    private func convertGUIConfig(json: [String: Any], feeds: [[String: Any]]) throws -> Configuration {
+        // Find first enabled feed, or first feed if none enabled
+        guard !feeds.isEmpty else {
+            throw ConfigError.missingRequiredField("feeds (no feeds configured)")
+        }
+
+        guard let feed = feeds.first(where: { $0["isEnabled"] as? Bool ?? true }) ?? feeds.first else {
+            throw ConfigError.missingRequiredField("feeds (no enabled feeds)")
+        }
+
+        var config = Configuration()
+
+        // Source
+        if let icsURL = feed["icsURL"] as? String {
+            config.source.url = icsURL
+        }
+
+        // Destination
+        if let calendarName = feed["calendarName"] as? String {
+            config.destination.calendarName = calendarName
+        }
+
+        // Sync settings
+        if let deleteOrphans = feed["deleteOrphans"] as? Bool {
+            config.sync.deleteOrphans = deleteOrphans
+        }
+
+        // Daemon interval (feed-specific or global)
+        if let syncInterval = feed["syncInterval"] as? Int {
+            config.daemon.intervalMinutes = syncInterval
+        } else if let globalInterval = json["global_sync_interval"] as? Int {
+            config.daemon.intervalMinutes = globalInterval
+        }
+
+        // Notifications
+        if let notificationsEnabled = json["notifications_enabled"] as? Bool {
+            config.notifications.enabled = notificationsEnabled
+        }
+        if let feedNotifications = feed["notificationsEnabled"] as? Bool {
+            config.notifications.enabled = feedNotifications
+        }
+
         return config
     }
 

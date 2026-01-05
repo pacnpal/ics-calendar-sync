@@ -59,9 +59,9 @@ Download the macOS App from the [Releases page](https://github.com/pacnpal/ics-c
 
 | Your Mac | Download |
 |----------|----------|
-| Apple Silicon (M1/M2/M3/M4) | `ICS-Calendar-Sync-macOS-App-arm64-v2.0.1.zip` |
-| Intel | `ICS-Calendar-Sync-macOS-App-x86_64-v2.0.1.zip` |
-| **Not sure** | `ICS-Calendar-Sync-macOS-App-universal-v2.0.1.zip` |
+| Apple Silicon (M1/M2/M3/M4) | `ICS-Calendar-Sync-macOS-App-arm64-v2.1.0.zip` |
+| Intel | `ICS-Calendar-Sync-macOS-App-x86_64-v2.1.0.zip` |
+| **Not sure** | `ICS-Calendar-Sync-macOS-App-universal-v2.1.0.zip` |
 
 1. Extract the zip file
 2. Drag **ICS Calendar Sync.app** to your Applications folder
@@ -109,14 +109,14 @@ Download the latest release from the [Releases page](https://github.com/pacnpal/
 
 | Your Mac | Download | How to check |
 |----------|----------|--------------|
-| Apple Silicon | `ics-calendar-sync-cli-arm64-v2.0.1.zip` | Apple menu > About This Mac shows "Chip: Apple M1/M2/M3/M4" |
-| Intel | `ics-calendar-sync-cli-x86_64-v2.0.1.zip` | Apple menu > About This Mac shows "Processor: Intel" |
-| **Not sure** | `ics-calendar-sync-cli-universal-v2.0.1.zip` | Works on all Macs |
+| Apple Silicon | `ics-calendar-sync-cli-arm64-v2.1.0.zip` | Apple menu > About This Mac shows "Chip: Apple M1/M2/M3/M4" |
+| Intel | `ics-calendar-sync-cli-x86_64-v2.1.0.zip` | Apple menu > About This Mac shows "Processor: Intel" |
+| **Not sure** | `ics-calendar-sync-cli-universal-v2.1.0.zip` | Works on all Macs |
 
 ```bash
 # Extract the zip (replace ARCH with arm64, x86_64, or universal)
 cd ~/Downloads
-unzip ics-calendar-sync-cli-ARCH-v2.0.1.zip
+unzip ics-calendar-sync-cli-ARCH-v2.1.0.zip
 
 # Remove quarantine attribute
 xattr -d com.apple.quarantine ics-calendar-sync-*
@@ -668,9 +668,21 @@ swift test --filter SyncViewModelTests/testAddFeed
 
 ## Version
 
-Current version: **2.0.1**
+Current version: **2.1.0**
 
 ### Changelog
+
+#### v2.1.0
+- **Bulletproof Robustness**: Comprehensive protection against data loss and corruption
+- **Empty Feed Protection**: Won't delete all events if ICS feed returns 0 events
+- **Mass Deletion Guard**: Prevents deletion of >90% of events in a single sync
+- **Concurrent Sync Prevention**: File-based lock prevents multiple sync operations
+- **Calendar Access Verification**: Re-checks calendar permissions during sync
+- **Network Error Handling**: Improved retry logic for HTTP 429/503/5xx errors
+- **ICS Format Validation**: Verifies response is valid ICS before processing
+- **Graceful Shutdown**: Proper database cleanup on termination
+- **Unified Config Format**: CLI now supports GUI config format automatically
+- **13 New Tests**: Comprehensive test coverage for robustness features
 
 #### v2.0.1
 - **Standalone GUI App**: GUI app now works independently without requiring CLI installation

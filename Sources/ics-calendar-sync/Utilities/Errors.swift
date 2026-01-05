@@ -5,7 +5,7 @@ import Foundation
 /// Errors related to ICS feed fetching and parsing
 enum ICSError: LocalizedError {
     case fetchFailed(URL, Error)
-    case invalidResponse(Int)
+    case invalidResponse(Int, message: String? = nil)
     case parseError(String)
     case missingUID
     case invalidStartDate
@@ -14,13 +14,19 @@ enum ICSError: LocalizedError {
     case invalidURL(String)
     case authenticationRequired
     case invalidTimezone(String)
+    case emptyResponse
 
     var errorDescription: String? {
         switch self {
         case .fetchFailed(let url, let error):
             return "Failed to fetch ICS from \(url): \(error.localizedDescription)"
-        case .invalidResponse(let code):
+        case .invalidResponse(let code, let message):
+            if let message = message {
+                return message
+            }
             return "Server returned HTTP \(code)"
+        case .emptyResponse:
+            return "Server returned empty response"
         case .parseError(let message):
             return "ICS parse error: \(message)"
         case .missingUID:
@@ -90,6 +96,8 @@ enum SyncError: LocalizedError {
     case configurationError(String)
     case networkError(Error)
     case partialFailure(created: Int, updated: Int, deleted: Int, errors: [Error])
+    case syncInProgress
+    case calendarAccessRevoked
 
     var errorDescription: String? {
         switch self {
@@ -107,6 +115,10 @@ enum SyncError: LocalizedError {
             return "Network error: \(error.localizedDescription)"
         case .partialFailure(let created, let updated, let deleted, let errors):
             return "Partial sync failure: \(created) created, \(updated) updated, \(deleted) deleted, \(errors.count) errors"
+        case .syncInProgress:
+            return "Another sync is already in progress"
+        case .calendarAccessRevoked:
+            return "Calendar access has been revoked"
         }
     }
 }

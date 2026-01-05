@@ -50,7 +50,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ics-calendar-sync.gui
         PRODUCT_NAME: ICS Calendar Sync
-        MARKETING_VERSION: "2.0.1"
+        MARKETING_VERSION: "2.1.0"
         CURRENT_PROJECT_VERSION: "1"
         INFOPLIST_FILE: Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Resources/ICSCalendarSyncGUI.entitlements
@@ -62,6 +62,7 @@ targets:
           - $(inherited)
           - "@executable_path/../Frameworks"
         COMBINE_HIDPI_IMAGES: YES
+        SWIFT_ENABLE_EXPLICIT_MODULES: NO
     dependencies:
       - package: SQLite
         product: SQLite

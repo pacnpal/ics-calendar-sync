@@ -106,7 +106,7 @@ actor ICSFetcher {
 
         // Add standard headers
         request.setValue("text/calendar, text/plain;q=0.9, */*;q=0.8", forHTTPHeaderField: "Accept")
-        request.setValue("ics-calendar-sync/1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("ics-calendar-sync/2.1.0", forHTTPHeaderField: "User-Agent")
 
         let (data, response) = try await session.data(for: request)
 
@@ -121,12 +121,31 @@ actor ICSFetcher {
             throw ICSError.authenticationRequired
         case 404:
             throw ICSError.fetchFailed(url, NSError(domain: "Not Found", code: 404))
+        case 429:
+            // Rate limited - should trigger retry with backoff
+            throw ICSError.invalidResponse(429, message: "Rate limited (429) - too many requests")
+        case 503:
+            // Service unavailable - should trigger retry
+            throw ICSError.invalidResponse(503, message: "Service unavailable (503)")
+        case 500...599:
+            // Server error - should trigger retry
+            throw ICSError.invalidResponse(httpResponse.statusCode, message: "Server error (\(httpResponse.statusCode))")
         default:
             throw ICSError.invalidResponse(httpResponse.statusCode)
         }
 
+        // Check for empty response (critical safety check)
+        guard !data.isEmpty else {
+            throw ICSError.parseError("Server returned empty response")
+        }
+
         // Try to decode as UTF-8, fall back to Latin-1
         if let content = String(data: data, encoding: .utf8) {
+            // Verify it looks like ICS content
+            guard content.contains("BEGIN:VCALENDAR") || content.contains("BEGIN:VEVENT") else {
+                logger.warning("Response doesn't look like ICS content (no VCALENDAR/VEVENT header)")
+                throw ICSError.parseError("Response is not valid ICS format")
+            }
             return content
         } else if let content = String(data: data, encoding: .isoLatin1) {
             logger.warning("ICS content was not UTF-8, decoded as Latin-1")

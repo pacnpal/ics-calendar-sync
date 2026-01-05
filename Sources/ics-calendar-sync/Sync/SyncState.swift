@@ -393,6 +393,14 @@ actor SyncStateStore {
         logger.info("State database reset")
     }
 
+    /// Close database connection gracefully
+    func close() {
+        if db != nil {
+            logger.debug("Closing state database")
+            db = nil
+        }
+    }
+
     // MARK: - Helper Methods
 
     private func formatDate(_ date: Date) -> String {
