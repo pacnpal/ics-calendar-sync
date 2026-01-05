@@ -23,21 +23,21 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
-      - name: Build ARM64 binary
+      - name: Build ARM64 CLI
         run: |
           swift build -c release --arch arm64
           mkdir -p artifacts
-          cp .build/arm64-apple-macosx/release/ics-calendar-sync artifacts/ics-calendar-sync-arm64
+          cp .build/arm64-apple-macosx/release/ics-calendar-sync artifacts/ics-calendar-sync-cli-arm64
 
-      - name: Build Intel binary
+      - name: Build Intel CLI
         run: |
           swift build -c release --arch x86_64
-          cp .build/x86_64-apple-macosx/release/ics-calendar-sync artifacts/ics-calendar-sync-x86_64
+          cp .build/x86_64-apple-macosx/release/ics-calendar-sync artifacts/ics-calendar-sync-cli-x86_64
 
-      - name: Build Universal binary
+      - name: Build Universal CLI
         run: |
           swift build -c release --arch arm64 --arch x86_64
-          cp .build/apple/Products/Release/ics-calendar-sync artifacts/ics-calendar-sync-universal
+          cp .build/apple/Products/Release/ics-calendar-sync artifacts/ics-calendar-sync-cli-universal
 
       - name: Generate Xcode project
         run: xcodegen generate
@@ -53,7 +53,7 @@ jobs:
 
           cp -R "build-arm64/Build/Products/Release/ICS Calendar Sync.app" artifacts/
           cd artifacts
-          zip -r "ICS.Calendar.Sync-arm64-${{ steps.version.outputs.VERSION }}.zip" "ICS Calendar Sync.app"
+          zip -r "ICS-Calendar-Sync-macOS-App-arm64-${{ steps.version.outputs.VERSION }}.zip" "ICS Calendar Sync.app"
           rm -rf "ICS Calendar Sync.app"
 
       - name: Build GUI App (Intel)
@@ -67,7 +67,7 @@ jobs:
 
           cp -R "build-x86_64/Build/Products/Release/ICS Calendar Sync.app" artifacts/
           cd artifacts
-          zip -r "ICS.Calendar.Sync-x86_64-${{ steps.version.outputs.VERSION }}.zip" "ICS Calendar Sync.app"
+          zip -r "ICS-Calendar-Sync-macOS-App-x86_64-${{ steps.version.outputs.VERSION }}.zip" "ICS Calendar Sync.app"
           rm -rf "ICS Calendar Sync.app"
 
       - name: Build GUI App (Universal)
@@ -82,7 +82,7 @@ jobs:
 
           cp -R "build-universal/Build/Products/Release/ICS Calendar Sync.app" artifacts/
           cd artifacts
-          zip -r "ICS.Calendar.Sync-universal-${{ steps.version.outputs.VERSION }}.zip" "ICS Calendar Sync.app"
+          zip -r "ICS-Calendar-Sync-macOS-App-universal-${{ steps.version.outputs.VERSION }}.zip" "ICS Calendar Sync.app"
           rm -rf "ICS Calendar Sync.app"
 
       - name: Create CLI archives
@@ -105,11 +105,11 @@ jobs:
         run: |
           cd artifacts
           gh release upload ${{ steps.version.outputs.VERSION }} \
-            ics-calendar-sync-arm64-${{ steps.version.outputs.VERSION }}.zip \
-            ics-calendar-sync-x86_64-${{ steps.version.outputs.VERSION }}.zip \
-            ics-calendar-sync-universal-${{ steps.version.outputs.VERSION }}.zip \
-            ICS.Calendar.Sync-arm64-${{ steps.version.outputs.VERSION }}.zip \
-            ICS.Calendar.Sync-x86_64-${{ steps.version.outputs.VERSION }}.zip \
-            ICS.Calendar.Sync-universal-${{ steps.version.outputs.VERSION }}.zip \
+            ics-calendar-sync-cli-arm64-${{ steps.version.outputs.VERSION }}.zip \
+            ics-calendar-sync-cli-x86_64-${{ steps.version.outputs.VERSION }}.zip \
+            ics-calendar-sync-cli-universal-${{ steps.version.outputs.VERSION }}.zip \
+            ICS-Calendar-Sync-macOS-App-arm64-${{ steps.version.outputs.VERSION }}.zip \
+            ICS-Calendar-Sync-macOS-App-x86_64-${{ steps.version.outputs.VERSION }}.zip \
+            ICS-Calendar-Sync-macOS-App-universal-${{ steps.version.outputs.VERSION }}.zip \
             checksums-${{ steps.version.outputs.VERSION }}.txt \
             --clobber
