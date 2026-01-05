@@ -46,10 +46,10 @@ jobs:
 
       - name: Build GUI App (ARM64)
         run: |
-          # Build ARM64 CLI and copy to expected location for embedding
-          swift build -c release --arch arm64
+          # Copy already-built ARM64 CLI to expected location for embedding
           mkdir -p .build/release
-          cp .build/arm64-apple-macosx/release/ics-calendar-sync .build/release/
+          rm -f .build/release/ics-calendar-sync
+          cp artifacts/ics-calendar-sync-cli-arm64 .build/release/ics-calendar-sync
 
           xcodebuild -project ICSCalendarSyncGUI.xcodeproj \
             -scheme "ICS Calendar Sync" \
@@ -65,10 +65,10 @@ jobs:
 
       - name: Build GUI App (Intel)
         run: |
-          # Build Intel CLI and copy to expected location for embedding
-          swift build -c release --arch x86_64
+          # Copy already-built Intel CLI to expected location for embedding
           mkdir -p .build/release
-          cp .build/x86_64-apple-macosx/release/ics-calendar-sync .build/release/
+          rm -f .build/release/ics-calendar-sync
+          cp artifacts/ics-calendar-sync-cli-x86_64 .build/release/ics-calendar-sync
 
           xcodebuild -project ICSCalendarSyncGUI.xcodeproj \
             -scheme "ICS Calendar Sync" \
@@ -84,10 +84,10 @@ jobs:
 
       - name: Build GUI App (Universal)
         run: |
-          # Build Universal CLI and copy to expected location for embedding
-          swift build -c release --arch arm64 --arch x86_64
+          # Copy already-built Universal CLI to expected location for embedding
           mkdir -p .build/release
-          cp .build/apple/Products/Release/ics-calendar-sync .build/release/
+          rm -f .build/release/ics-calendar-sync
+          cp artifacts/ics-calendar-sync-cli-universal .build/release/ics-calendar-sync
 
           xcodebuild -project ICSCalendarSyncGUI.xcodeproj \
             -scheme "ICS Calendar Sync" \
