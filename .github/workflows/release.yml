@@ -50,6 +50,7 @@ jobs:
           mkdir -p .build/release
           rm -f .build/release/ics-calendar-sync
           cp artifacts/ics-calendar-sync-cli-arm64 .build/release/ics-calendar-sync
+          chmod +x .build/release/ics-calendar-sync
 
           xcodebuild -project ICSCalendarSyncGUI.xcodeproj \
             -scheme "ICS Calendar Sync" \
@@ -57,6 +58,16 @@ jobs:
             -derivedDataPath build-arm64 \
             ARCHS=arm64 \
             build
+
+          # Verify CLI was embedded correctly
+          CLI_PATH="build-arm64/Build/Products/Release/ICS Calendar Sync.app/Contents/Resources/ics-calendar-sync"
+          if [ ! -f "$CLI_PATH" ]; then
+            echo "ERROR: CLI binary not found in app bundle at $CLI_PATH"
+            exit 1
+          fi
+          echo "CLI embedded successfully:"
+          ls -la "$CLI_PATH"
+          "$CLI_PATH" --version
 
           cp -R "build-arm64/Build/Products/Release/ICS Calendar Sync.app" artifacts/
           cd artifacts
@@ -69,6 +80,7 @@ jobs:
           mkdir -p .build/release
           rm -f .build/release/ics-calendar-sync
           cp artifacts/ics-calendar-sync-cli-x86_64 .build/release/ics-calendar-sync
+          chmod +x .build/release/ics-calendar-sync
 
           xcodebuild -project ICSCalendarSyncGUI.xcodeproj \
             -scheme "ICS Calendar Sync" \
@@ -76,6 +88,15 @@ jobs:
             -derivedDataPath build-x86_64 \
             ARCHS=x86_64 \
             build
+
+          # Verify CLI was embedded correctly
+          CLI_PATH="build-x86_64/Build/Products/Release/ICS Calendar Sync.app/Contents/Resources/ics-calendar-sync"
+          if [ ! -f "$CLI_PATH" ]; then
+            echo "ERROR: CLI binary not found in app bundle at $CLI_PATH"
+            exit 1
+          fi
+          echo "CLI embedded successfully:"
+          ls -la "$CLI_PATH"
 
           cp -R "build-x86_64/Build/Products/Release/ICS Calendar Sync.app" artifacts/
           cd artifacts
@@ -88,6 +109,7 @@ jobs:
           mkdir -p .build/release
           rm -f .build/release/ics-calendar-sync
           cp artifacts/ics-calendar-sync-cli-universal .build/release/ics-calendar-sync
+          chmod +x .build/release/ics-calendar-sync
 
           xcodebuild -project ICSCalendarSyncGUI.xcodeproj \
             -scheme "ICS Calendar Sync" \
@@ -96,6 +118,16 @@ jobs:
             ARCHS="arm64 x86_64" \
             ONLY_ACTIVE_ARCH=NO \
             build
+
+          # Verify CLI was embedded correctly
+          CLI_PATH="build-universal/Build/Products/Release/ICS Calendar Sync.app/Contents/Resources/ics-calendar-sync"
+          if [ ! -f "$CLI_PATH" ]; then
+            echo "ERROR: CLI binary not found in app bundle at $CLI_PATH"
+            exit 1
+          fi
+          echo "CLI embedded successfully:"
+          ls -la "$CLI_PATH"
+          "$CLI_PATH" --version
 
           cp -R "build-universal/Build/Products/Release/ICS Calendar Sync.app" artifacts/
           cd artifacts

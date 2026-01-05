@@ -395,20 +395,25 @@ struct CLIResult: Equatable, Sendable {
 // MARK: - Real CLI Runner
 
 final class RealCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
-    private let cliPath: String
+    private let cliPath: String?
     private let logger: GUILoggerProtocol
 
-    init(cliPath: String, logger: GUILoggerProtocol) {
+    init(cliPath: String?, logger: GUILoggerProtocol) {
         self.cliPath = cliPath
         self.logger = logger
     }
 
     func run(arguments: [String]) async -> CLIResult {
+        guard let cliPath = cliPath else {
+            logger.error("CLI binary not embedded in app bundle")
+            return CLIResult(output: "CLI binary not found. The app was not built correctly - please rebuild with 'swift build -c release' before building the app.", exitCode: 1)
+        }
+
         logger.debug("Running CLI: \(cliPath) \(arguments.joined(separator: " "))")
 
         guard FileManager.default.fileExists(atPath: cliPath) else {
             logger.error("CLI not found at \(cliPath)")
-            return CLIResult(output: "CLI not found at \(cliPath). Please install first.", exitCode: 1)
+            return CLIResult(output: "CLI not found at \(cliPath). Please rebuild the app.", exitCode: 1)
         }
 
         return await withCheckedContinuation { continuation in
@@ -567,19 +572,17 @@ final class MockFileSystem: FileSystemProtocol, @unchecked Sendable {
 struct SyncViewModelDependencies: Sendable {
     let configPath: String
     let statePath: String
-    let cliPath: String
+    let cliPath: String?  // nil if CLI not found (app not built correctly)
     let cliRunner: CLIRunnerProtocol
     let fileSystem: FileSystemProtocol
     let logger: GUILoggerProtocol
 
-    /// Find CLI binary in order of preference:
-    /// 1. Embedded in app bundle (Contents/Resources/ics-calendar-sync)
-    /// 2. Alongside app bundle (for development)
-    /// 3. System install at /usr/local/bin
-    static func findCLIPath() -> String {
+    /// Find CLI binary - must be embedded in app bundle or available for development
+    /// No fallback to system install to ensure version consistency
+    static func findCLIPath() -> String? {
         let fm = FileManager.default
 
-        // 1. Check inside app bundle Resources
+        // 1. Check inside app bundle Resources (production)
         if let bundlePath = Bundle.main.resourcePath {
             let embeddedPath = "\(bundlePath)/ics-calendar-sync"
             if fm.fileExists(atPath: embeddedPath) {
@@ -596,7 +599,7 @@ struct SyncViewModelDependencies: Sendable {
             }
         }
 
-        // 3. Check alongside the app bundle (for development builds)
+        // 3. Check alongside the app bundle (for development builds only)
         if let bundlePath = Bundle.main.bundlePath as NSString? {
             let parentDir = bundlePath.deletingLastPathComponent
             // Check .build/debug for SPM builds
@@ -611,8 +614,8 @@ struct SyncViewModelDependencies: Sendable {
             }
         }
 
-        // 4. Fallback to system install
-        return "/usr/local/bin/ics-calendar-sync"
+        // No fallback - CLI must be embedded or available for development
+        return nil
     }
 
     static func createDefault() -> SyncViewModelDependencies {
@@ -622,7 +625,11 @@ struct SyncViewModelDependencies: Sendable {
         let cliPath = findCLIPath()
         let logger = GUILogger.shared
 
-        logger.info("Using CLI at: \(cliPath)")
+        if let cliPath = cliPath {
+            logger.info("Using CLI at: \(cliPath)")
+        } else {
+            logger.error("CLI binary not found! App may not have been built correctly. Build CLI first with 'swift build -c release'")
+        }
 
         return SyncViewModelDependencies(
             configPath: configPath,
@@ -1064,9 +1071,16 @@ class SyncViewModel: ObservableObject {
     func installService() async -> Bool {
         deps.logger.info("Installing background service")
 
-        // Check if CLI exists
-        guard FileManager.default.fileExists(atPath: deps.cliPath) else {
-            lastError = "CLI not found at \(deps.cliPath). Cannot install service."
+        // Check if CLI path exists
+        guard let cliPath = deps.cliPath else {
+            lastError = "CLI binary not embedded in app. Cannot install service."
+            deps.logger.error(lastError!)
+            return false
+        }
+
+        // Check if CLI file exists
+        guard FileManager.default.fileExists(atPath: cliPath) else {
+            lastError = "CLI not found at \(cliPath). Cannot install service."
             deps.logger.error(lastError!)
             return false
         }
@@ -1096,7 +1110,7 @@ class SyncViewModel: ObservableObject {
         }
 
         // Generate plist content
-        let plistContent = generateLaunchAgentPlist()
+        let plistContent = generateLaunchAgentPlist(cliPath: cliPath)
 
         // Write plist file
         do {
@@ -1219,7 +1233,7 @@ class SyncViewModel: ObservableObject {
     }
 
     /// Generate the LaunchAgent plist content
-    private func generateLaunchAgentPlist() -> String {
+    private func generateLaunchAgentPlist(cliPath: String) -> String {
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1230,7 +1244,7 @@ class SyncViewModel: ObservableObject {
 
             <key>ProgramArguments</key>
             <array>
-                <string>\(deps.cliPath)</string>
+                <string>\(cliPath)</string>
                 <string>daemon</string>
                 <string>--config</string>
                 <string>\(deps.configPath)</string>
@@ -1280,9 +1294,13 @@ class SyncViewModel: ObservableObject {
 
         // Only auto-install if:
         // 1. Service is not installed
-        // 2. CLI binary exists
-        // 3. We have at least one feed configured (or will install anyway for future use)
-        if !isServiceInstalled && FileManager.default.fileExists(atPath: deps.cliPath) {
+        // 2. CLI binary is embedded and exists
+        guard let cliPath = deps.cliPath else {
+            deps.logger.warning("Cannot auto-install service: CLI binary not embedded in app")
+            return
+        }
+
+        if !isServiceInstalled && FileManager.default.fileExists(atPath: cliPath) {
             deps.logger.info("Auto-installing service on first run")
             let success = await installService()
             if success {
