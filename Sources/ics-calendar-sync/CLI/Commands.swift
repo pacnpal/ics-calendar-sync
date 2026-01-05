@@ -9,7 +9,7 @@ struct ICSCalendarSync: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ics-calendar-sync",
         abstract: "Sync ICS calendar subscriptions to macOS Calendar",
-        version: "1.1.1",
+        version: "1.1.2",
         subcommands: [
             SetupCommand.self,
             ConfigureCommand.self,
@@ -520,6 +520,9 @@ struct MigrateCommand: AsyncParsableCommand {
 
     @OptionGroup var global: GlobalOptions
 
+    @Flag(name: .long, help: "Delete duplicate events that match ICS but don't have UID markers")
+    var cleanupDuplicates: Bool = false
+
     mutating func run() async throws {
         global.configureLogger()
         let logger = Logger.shared
@@ -534,13 +537,7 @@ struct MigrateCommand: AsyncParsableCommand {
         let calendarManager = CalendarManager()
         try await calendarManager.requestAccess()
 
-        // Find target calendar
-        guard let calendar = await calendarManager.findCalendar(named: config.destination.calendarName) else {
-            logger.error("Calendar not found: \(config.destination.calendarName)")
-            throw ExitCode.failure
-        }
-
-        logger.info("Using calendar: \(calendar.title)")
+        logger.info("Calendar access granted")
 
         // Fetch and parse ICS
         logger.info("Fetching ICS from \(config.source.url)...")
@@ -556,74 +553,82 @@ struct MigrateCommand: AsyncParsableCommand {
         let icsEvents = try await icsParser.parse(icsContent)
         logger.info("Parsed \(icsEvents.count) events from ICS")
 
-        // Build lookup map for ICS events by title+date
+        // Build lookup map for ICS events by UID
         var icsLookup: [String: ICSEvent] = [:]
         for event in icsEvents {
-            let key = makeMatchKey(title: event.summary, startDate: event.startDate, isAllDay: event.isAllDay)
-            icsLookup[key] = event
+            icsLookup[event.uid] = event
         }
 
-        // Get ALL events from calendar (wide range)
-        let searchStart = Date().addingTimeInterval(-100 * 365 * 24 * 60 * 60)
-        let searchEnd = Date().addingTimeInterval(50 * 365 * 24 * 60 * 60)
-        let calendarEvents = await calendarManager.getEvents(in: calendar, from: searchStart, to: searchEnd)
+        // Load sync state to get tracked events (same approach as SyncEngine)
+        let stateStore = SyncStateStore(path: config.state.path)
+        try await stateStore.initialize()
+        let syncedEvents = try await stateStore.getAllSyncedEvents()
 
-        logger.info("Found \(calendarEvents.count) events in calendar")
+        logger.info("Found \(syncedEvents.count) tracked events in sync state")
 
-        // Process events
+        // Process events using the same lookup method as SyncEngine
         var migrated = 0
         var alreadyHasUID = 0
-        var noMatch = 0
+        var notFound = 0
+        var noICSMatch = 0
         var errors = 0
 
         let mappingConfig = config.getMappingConfig()
 
-        for ekEvent in calendarEvents {
+        // Find target calendar for fallback searches
+        guard let calendar = await calendarManager.findCalendar(named: config.destination.calendarName) else {
+            logger.error("Calendar not found: \(config.destination.calendarName)")
+            throw ExitCode.failure
+        }
+
+        logger.info("Using calendar: \(calendar.title)")
+
+        for (uid, state) in syncedEvents {
+            // Find corresponding ICS event first
+            guard let icsEvent = icsLookup[uid] else {
+                noICSMatch += 1
+                logger.debug("No ICS event found for UID: \(uid)")
+                continue
+            }
+
+            // Look up the calendar event using same fallback chain as SyncEngine:
+            // 1. Try by stored calendarItemId
+            var ekEvent = await calendarManager.findEvent(byExternalId: state.calendarItemId)
+
+            // 2. Fallback: search by ICS UID embedded in notes
+            if ekEvent == nil {
+                ekEvent = await calendarManager.findEvent(byICSUID: uid, in: calendar)
+            }
+
+            // 3. Fallback: search by matching properties (title, date)
+            if ekEvent == nil {
+                ekEvent = await calendarManager.findEvent(matching: icsEvent, in: calendar, config: mappingConfig)
+            }
+
+            guard let event = ekEvent else {
+                notFound += 1
+                logger.debug("Event not found in calendar: \(uid)")
+                continue
+            }
+
             // Check if already has UID marker
-            if EventMapper.containsUIDMarker(ekEvent.notes) {
+            if EventMapper.containsUIDMarker(event.notes) {
                 alreadyHasUID += 1
                 continue
             }
 
-            // Try to match to ICS event
-            let key = makeMatchKey(title: ekEvent.title, startDate: ekEvent.startDate, isAllDay: ekEvent.isAllDay)
-
-            if let icsEvent = icsLookup[key] {
-                // Found match - update event to add UID marker
-                if global.dryRun {
-                    logger.info("Would migrate: \(ekEvent.title ?? "(No Title)")")
-                    migrated += 1
-                } else {
-                    do {
-                        try await calendarManager.updateEvent(ekEvent, from: icsEvent, config: mappingConfig)
-                        logger.info("Migrated: \(ekEvent.title ?? "(No Title)")")
-                        migrated += 1
-                    } catch {
-                        logger.error("Failed to migrate \(ekEvent.title ?? "(No Title)"): \(error)")
-                        errors += 1
-                    }
-                }
+            // Migrate: add UID marker to event
+            if global.dryRun {
+                logger.info("Would migrate: \(event.title ?? "(No Title)")")
+                migrated += 1
             } else {
-                // Try fuzzy match (within 5 minute tolerance)
-                if let icsEvent = findFuzzyMatch(for: ekEvent, in: icsEvents, config: mappingConfig) {
-                    if global.dryRun {
-                        logger.info("Would migrate (fuzzy): \(ekEvent.title ?? "(No Title)")")
-                        migrated += 1
-                    } else {
-                        do {
-                            try await calendarManager.updateEvent(ekEvent, from: icsEvent, config: mappingConfig)
-                            logger.info("Migrated (fuzzy): \(ekEvent.title ?? "(No Title)")")
-                            migrated += 1
-                        } catch {
-                            logger.error("Failed to migrate \(ekEvent.title ?? "(No Title)"): \(error)")
-                            errors += 1
-                        }
-                    }
-                } else {
-                    noMatch += 1
-                    if global.verbose >= 1 {
-                        logger.debug("No match for: \(ekEvent.title ?? "(No Title)") at \(ekEvent.startDate.formatted())")
-                    }
+                do {
+                    try await calendarManager.updateEvent(event, from: icsEvent, config: mappingConfig)
+                    logger.info("Migrated: \(event.title ?? "(No Title)")")
+                    migrated += 1
+                } catch {
+                    logger.error("Failed to migrate \(event.title ?? "(No Title)"): \(error)")
+                    errors += 1
                 }
             }
         }
@@ -633,61 +638,78 @@ struct MigrateCommand: AsyncParsableCommand {
         print("Migration Summary:")
         print("  Already has UID: \(alreadyHasUID)")
         print("  Migrated:        \(migrated)")
-        print("  No ICS match:    \(noMatch)")
+        print("  Not in calendar: \(notFound)")
+        print("  No ICS match:    \(noICSMatch)")
         print("  Errors:          \(errors)")
 
         if global.dryRun {
             logger.info("Dry run - no changes were made")
         }
 
-        if noMatch > 0 {
-            logger.warning("\(noMatch) events had no matching ICS event - these may be manually created or from a different source")
+        if notFound > 0 {
+            logger.warning("\(notFound) events were not found in calendar - they may have been deleted")
         }
-    }
 
-    private func makeMatchKey(title: String?, startDate: Date, isAllDay: Bool) -> String {
-        let normalizedTitle = (title ?? "").lowercased().trimmingCharacters(in: .whitespaces)
-        let dateFormatter = ISO8601DateFormatter()
-        if isAllDay {
-            // For all-day events, just use the date part
-            let calendar = Calendar.current
-            let components = calendar.dateComponents([.year, .month, .day], from: startDate)
-            return "\(normalizedTitle)|\(components.year!)-\(components.month!)-\(components.day!)|allday"
-        } else {
-            return "\(normalizedTitle)|\(dateFormatter.string(from: startDate))"
-        }
-    }
+        // Cleanup duplicates if requested
+        if cleanupDuplicates {
+            logger.info("Searching for duplicate events to clean up...")
+            var duplicatesDeleted = 0
+            var duplicateErrors = 0
 
-    private func findFuzzyMatch(for ekEvent: EKEvent, in icsEvents: [ICSEvent], config: EventMapper.MappingConfig) -> ICSEvent? {
-        let timeTolerance: TimeInterval = 300 // 5 minutes
-        let ekTitle = (ekEvent.title ?? "").lowercased()
-        let expectedPrefix = config.summaryPrefix.lowercased()
+            for icsEvent in icsEvents {
+                // Search for events matching this ICS event by properties
+                let searchStart = icsEvent.startDate.addingTimeInterval(-86400 * 2)
+                let searchEnd = icsEvent.startDate.addingTimeInterval(86400 * 2)
+                let candidates = await calendarManager.getEvents(in: calendar, from: searchStart, to: searchEnd)
 
-        for icsEvent in icsEvents {
-            let icsTitle = (icsEvent.summary ?? "").lowercased()
-            let expectedTitle = expectedPrefix + icsTitle
+                // Find events that match title/date but DON'T have UID marker (duplicates)
+                let expectedTitle = mappingConfig.summaryPrefix + (icsEvent.summary ?? "")
+                // Use large tolerance (1 hour) since ICS times may have changed since original sync
+                let timeTolerance: TimeInterval = 3600
 
-            // Title match: either exact, contains, or with prefix
-            let titleMatch = ekTitle == icsTitle ||
-                             ekTitle == expectedTitle ||
-                             ekTitle.contains(icsTitle) ||
-                             icsTitle.contains(ekTitle)
+                for candidate in candidates {
+                    // Skip events that have UID markers (they're the "real" synced events)
+                    if EventMapper.containsUIDMarker(candidate.notes) {
+                        continue
+                    }
 
-            guard titleMatch else { continue }
+                    let candidateTitle = candidate.title?.lowercased() ?? ""
 
-            // isAllDay must match
-            guard ekEvent.isAllDay == icsEvent.isAllDay else { continue }
+                    // Check if this is a duplicate (matches title and time)
+                    let titleMatch = candidateTitle == expectedTitle.lowercased() ||
+                                     candidateTitle.contains(expectedTitle.lowercased()) ||
+                                     expectedTitle.lowercased().contains(candidateTitle)
 
-            // Time within tolerance
-            let startDiff = abs(ekEvent.startDate.timeIntervalSince(icsEvent.startDate))
-            let endDiff = abs(ekEvent.endDate.timeIntervalSince(icsEvent.endDate))
+                    guard titleMatch else { continue }
+                    guard candidate.isAllDay == icsEvent.isAllDay else { continue }
 
-            if startDiff <= timeTolerance && endDiff <= timeTolerance {
-                return icsEvent
+                    let startDiff = abs(candidate.startDate.timeIntervalSince(icsEvent.startDate))
+                    let endDiff = abs(candidate.endDate.timeIntervalSince(icsEvent.endDate))
+
+                    if startDiff <= timeTolerance && endDiff <= timeTolerance {
+                        // This is a duplicate without UID marker - delete it
+                        if global.dryRun {
+                            logger.info("Would delete duplicate: \(candidate.title ?? "(No Title)")")
+                            duplicatesDeleted += 1
+                        } else {
+                            do {
+                                try await calendarManager.deleteEvent(candidate)
+                                logger.info("Deleted duplicate: \(candidate.title ?? "(No Title)")")
+                                duplicatesDeleted += 1
+                            } catch {
+                                logger.error("Failed to delete duplicate: \(error)")
+                                duplicateErrors += 1
+                            }
+                        }
+                    }
+                }
             }
-        }
 
-        return nil
+            logger.separator()
+            print("Cleanup Summary:")
+            print("  Duplicates deleted: \(duplicatesDeleted)")
+            print("  Errors:             \(duplicateErrors)")
+        }
     }
 }
 

@@ -236,10 +236,10 @@ actor CalendarManager {
     /// This searches ALL events in the calendar for the UID marker
     /// We search the entire calendar because the event's date may have changed
     func findEvent(byICSUID uid: String, in calendar: EKCalendar) -> EKEvent? {
-        // Search entire calendar - use very wide range (100 years back, 50 years forward)
-        // This ensures we find the event even if its date changed dramatically
-        let searchStart = Date().addingTimeInterval(-100 * 365 * 24 * 60 * 60)
-        let searchEnd = Date().addingTimeInterval(50 * 365 * 24 * 60 * 60)
+        // Search entire calendar - use wide but reasonable range (5 years back, 5 years forward)
+        // Note: EventKit doesn't handle extremely wide ranges (100+ years) - returns 0 events
+        let searchStart = Date().addingTimeInterval(-5 * 365 * 24 * 60 * 60)
+        let searchEnd = Date().addingTimeInterval(5 * 365 * 24 * 60 * 60)
 
         let predicate = eventStore.predicateForEvents(
             withStart: searchStart,
@@ -331,9 +331,10 @@ actor CalendarManager {
     }
 
     /// Get event count in calendar
+    /// Note: EventKit doesn't handle Date.distantPast/distantFuture well, so we use a 10-year window
     func getEventCount(in calendar: EKCalendar) -> Int {
-        let startDate = Date.distantPast
-        let endDate = Date.distantFuture
+        let startDate = Date().addingTimeInterval(-5 * 365 * 24 * 60 * 60)  // 5 years back
+        let endDate = Date().addingTimeInterval(5 * 365 * 24 * 60 * 60)     // 5 years forward
         return getEvents(in: calendar, from: startDate, to: endDate).count
     }
 

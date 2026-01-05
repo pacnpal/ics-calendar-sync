@@ -43,7 +43,7 @@ Download the latest release from the [Releases page](https://github.com/pacnpal/
 ```bash
 # Extract the zip (replace ARCH with arm64, x86_64, or universal)
 cd ~/Downloads
-unzip ics-calendar-sync-ARCH-v1.1.1.zip
+unzip ics-calendar-sync-ARCH-v1.1.2.zip
 
 # Remove quarantine attribute
 xattr -d com.apple.quarantine ics-calendar-sync-*
@@ -209,20 +209,33 @@ ics-calendar-sync migrate
 
 # With verbose output (shows unmatched events)
 ics-calendar-sync migrate -v
+
+# Clean up duplicate events (events matching ICS but without UID markers)
+ics-calendar-sync migrate --cleanup-duplicates
+
+# Dry run cleanup first
+ics-calendar-sync migrate --cleanup-duplicates --dry-run
 ```
 
 The command:
-1. Fetches all events from your ICS source
-2. Gets all events from your target calendar
-3. For each calendar event without a `[ICS-SYNC-UID:...]` marker:
-   - Matches it to an ICS event by title and date (exact or fuzzy)
-   - Updates the event to add the UID marker
+1. Loads tracked events from the sync state database
+2. Looks up each event in the calendar using the same fallback chain as sync:
+   - First by stored calendar item ID
+   - Then by ICS UID embedded in notes
+   - Finally by property matching (title + date)
+3. For each event without a `[ICS-SYNC-UID:...]` marker, adds the UID marker
+
+The `--cleanup-duplicates` flag additionally searches for and deletes events that:
+- Match ICS events by title and time (within 1 hour tolerance)
+- Do NOT have a UID marker (indicating they're orphaned duplicates)
 
 Output shows:
 - `Already has UID`: Events that were previously migrated
 - `Migrated`: Events that got UID markers added
-- `No ICS match`: Calendar events not in your ICS (manually created or from a different source)
+- `Not in calendar`: Events tracked in state but not found in calendar
+- `No ICS match`: Events in state with no corresponding ICS event
 - `Errors`: Any failed updates
+- `Duplicates deleted`: (with --cleanup-duplicates) Orphaned duplicates removed
 
 ### Examples
 
@@ -872,7 +885,7 @@ swift test --filter ICSParserTests/testBasicEvent
 
 ## Version
 
-Current version: 1.1.1
+Current version: 1.1.2
 
 ## License
 

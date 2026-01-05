@@ -286,7 +286,12 @@ actor SyncEngine {
         let needsUIDMarker = ekEvent != nil && !EventMapper.containsUIDMarker(ekEvent?.notes)
 
         // If content unchanged AND event already has UID marker, skip update
+        // Note: If ekEvent is nil but content unchanged, we still skip to avoid creating duplicates
+        // The event might exist but our lookup failed to find it
         if !contentChanged && !sequenceChanged && !needsUIDMarker {
+            if ekEvent == nil {
+                logger.debug("Event not found but content unchanged, skipping to avoid duplicate: \(icsEvent.uid)")
+            }
             return .unchanged
         }
 
