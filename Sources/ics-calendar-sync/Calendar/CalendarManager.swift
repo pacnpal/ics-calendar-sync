@@ -232,6 +232,94 @@ actor CalendarManager {
         eventStore.event(withIdentifier: id)
     }
 
+    /// Find event by ICS UID embedded in notes (bulletproof deduplication)
+    /// This searches ALL events in the calendar for the UID marker
+    /// We search the entire calendar because the event's date may have changed
+    func findEvent(byICSUID uid: String, in calendar: EKCalendar) -> EKEvent? {
+        // Search entire calendar - use very wide range (100 years back, 50 years forward)
+        // This ensures we find the event even if its date changed dramatically
+        let searchStart = Date().addingTimeInterval(-100 * 365 * 24 * 60 * 60)
+        let searchEnd = Date().addingTimeInterval(50 * 365 * 24 * 60 * 60)
+
+        let predicate = eventStore.predicateForEvents(
+            withStart: searchStart,
+            end: searchEnd,
+            calendars: [calendar]
+        )
+
+        let events = eventStore.events(matching: predicate)
+
+        // Find event with matching UID in notes
+        if let found = events.first(where: { EventMapper.extractUID(from: $0.notes) == uid }) {
+            logger.debug("Found event by UID marker: \(found.title ?? "(No Title)")")
+            return found
+        }
+        return nil
+    }
+
+    /// Find event by matching properties (title and start date) in a specific calendar
+    /// This is a fallback for legacy events that don't have the UID marker
+    /// Uses fuzzy matching: title contains expected text, times within 5 minutes
+    /// IMPORTANT: Only matches events that DON'T have a different UID marker (to avoid stealing other synced events)
+    func findEvent(matching icsEvent: ICSEvent, in calendar: EKCalendar, config: EventMapper.MappingConfig = EventMapper.MappingConfig()) -> EKEvent? {
+        // Search in a wider window to catch timezone edge cases
+        let searchStart = icsEvent.startDate.addingTimeInterval(-86400 * 2) // 2 days before
+        let searchEnd = icsEvent.startDate.addingTimeInterval(86400 * 2)    // 2 days after
+
+        let predicate = eventStore.predicateForEvents(
+            withStart: searchStart,
+            end: searchEnd,
+            calendars: [calendar]
+        )
+
+        let events = eventStore.events(matching: predicate)
+        let expectedTitle = config.summaryPrefix + (icsEvent.summary ?? "(No Title)")
+        let timeTolerance: TimeInterval = 300 // 5 minutes
+
+        // First pass: try exact UID match in notes
+        if let exactMatch = events.first(where: { EventMapper.extractUID(from: $0.notes) == icsEvent.uid }) {
+            logger.debug("Found event by UID in property search: \(exactMatch.title ?? "(No Title)")")
+            return exactMatch
+        }
+
+        // Second pass: fuzzy property matching for events WITHOUT a different UID marker
+        let fuzzyMatch = events.first { event in
+            // Check if this event has a UID marker
+            let existingUID = EventMapper.extractUID(from: event.notes)
+
+            // If event has a DIFFERENT UID marker, it belongs to another ICS event - don't touch it!
+            if existingUID != nil && existingUID != icsEvent.uid {
+                return false
+            }
+
+            // Event has NO UID marker or has OUR UID - safe to match by properties
+            // Use fuzzy matching for legacy events
+
+            // Title: check if either contains the other (case-insensitive)
+            let eventTitle = event.title?.lowercased() ?? ""
+            let expected = expectedTitle.lowercased()
+            let titleMatch = eventTitle == expected ||
+                             eventTitle.contains(expected) ||
+                             expected.contains(eventTitle)
+
+            guard titleMatch else { return false }
+
+            // isAllDay must match exactly
+            guard event.isAllDay == icsEvent.isAllDay else { return false }
+
+            // Times: within tolerance (handles slight timezone/rounding differences)
+            let startDiff = abs(event.startDate.timeIntervalSince(icsEvent.startDate))
+            let endDiff = abs(event.endDate.timeIntervalSince(icsEvent.endDate))
+
+            return startDiff <= timeTolerance && endDiff <= timeTolerance
+        }
+
+        if let found = fuzzyMatch {
+            logger.debug("Found event by fuzzy match: \(found.title ?? "(No Title)")")
+        }
+        return fuzzyMatch
+    }
+
     /// Get all events in a calendar within date range
     func getEvents(in calendar: EKCalendar, from startDate: Date, to endDate: Date) -> [EKEvent] {
         let predicate = eventStore.predicateForEvents(

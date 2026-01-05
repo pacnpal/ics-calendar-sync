@@ -115,17 +115,45 @@ enum EventMapper {
         init() {}
     }
 
+    // MARK: - UID Marker
+
+    /// Marker format for embedding ICS UID in event notes (for bulletproof deduplication)
+    private static let uidMarkerPrefix = "[ICS-SYNC-UID:"
+    private static let uidMarkerSuffix = "]"
+
+    /// Extract ICS UID from event notes if present
+    static func extractUID(from notes: String?) -> String? {
+        guard let notes = notes else { return nil }
+
+        guard let startRange = notes.range(of: uidMarkerPrefix),
+              let endRange = notes.range(of: uidMarkerSuffix, range: startRange.upperBound..<notes.endIndex) else {
+            return nil
+        }
+
+        return String(notes[startRange.upperBound..<endRange.lowerBound])
+    }
+
+    /// Check if notes contain a UID marker
+    static func containsUIDMarker(_ notes: String?) -> Bool {
+        guard let notes = notes else { return false }
+        return notes.contains(uidMarkerPrefix)
+    }
+
     // MARK: - Private Helpers
 
     private static func buildNotes(from event: ICSEvent, config: MappingConfig) -> String {
         var notes = event.description ?? ""
 
+        // Always append UID marker for bulletproof deduplication
+        // This allows us to find the event even if EventKit identifiers change
+        if !notes.isEmpty {
+            notes += "\n\n"
+        }
+        notes += "\(uidMarkerPrefix)\(event.uid)\(uidMarkerSuffix)"
+
         if config.includeSourceInfo {
-            if !notes.isEmpty {
-                notes += "\n\n---\n"
-            }
-            notes += "Synced from: \(config.sourceURL?.absoluteString ?? "ICS feed")\n"
-            notes += "Original UID: \(event.uid)"
+            notes += "\n---\n"
+            notes += "Synced from: \(config.sourceURL?.absoluteString ?? "ICS feed")"
         }
 
         return notes

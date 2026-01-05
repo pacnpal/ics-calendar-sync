@@ -7,6 +7,7 @@ A robust, enterprise-quality Swift command-line tool that synchronizes events fr
 - **Zero Authentication Hassle**: Uses native macOS calendar permissions with no app-specific passwords or OAuth required
 - **Automatic iCloud Sync**: Events sync to all your Apple devices via iCloud
 - **Smart Delta Sync**: Only creates, updates, or deletes events that have changed
+- **Bulletproof Deduplication**: Multi-layer event matching ensures no duplicates, even if iCloud changes event identifiers
 - **Full ICS Support**: Handles recurring events, timezones, alarms, and all standard iCalendar properties
 - **Background Sync**: Run as a daemon or install as a launchd service
 - **Interactive Setup**: User-friendly setup wizard guides you through configuration
@@ -42,7 +43,7 @@ Download the latest release from the [Releases page](https://github.com/pacnpal/
 ```bash
 # Extract the zip (replace ARCH with arm64, x86_64, or universal)
 cd ~/Downloads
-unzip ics-calendar-sync-ARCH-v1.0.0.zip
+unzip ics-calendar-sync-ARCH-v1.1.0.zip
 
 # Remove quarantine attribute
 xattr -d com.apple.quarantine ics-calendar-sync-*
@@ -492,25 +493,37 @@ tail -f ~/Library/Logs/ics-calendar-sync/stderr.log
 
 1. **Fetch**: Download ICS feed from source URL
 2. **Parse**: Extract all VEVENT components
-3. **Hash**: Calculate content hash for each event using SHA-256
-4. **Compare**: Match against stored state to detect changes
-5. **Detect Changes**:
+3. **Deduplicate**: Remove duplicate UIDs from the feed (keeps highest sequence number)
+4. **Hash**: Calculate content hash for each event using SHA-256
+5. **Compare**: Match against stored state to detect changes
+6. **Detect Changes**:
    - New events (UID not in state): Create in calendar
    - Modified events (hash changed or sequence increased): Update in calendar
    - Missing events (in state but not in ICS): Delete from calendar (if configured)
-6. **Apply**: Execute creates, updates, and deletes via EventKit
-7. **Persist**: Store new state to SQLite database
+7. **Apply**: Execute creates, updates, and deletes via EventKit
+8. **Persist**: Store new state to SQLite database
+
+### Bulletproof Event Matching
+
+To ensure events are never duplicated, even when iCloud changes EventKit identifiers, the tool uses a multi-layer matching system:
+
+1. **Calendar Item External ID**: The primary stable identifier from EventKit
+2. **Event Identifier**: Secondary EventKit identifier (available immediately after save)
+3. **Embedded UID Marker**: Each synced event has `[ICS-SYNC-UID:xxx]` embedded in its notes field, enabling lookup even if EventKit IDs change
+4. **Fuzzy Property Match**: For legacy events without the UID marker, matches by title (contains match) and time (within 5 minutes tolerance)
+
+When an event is found via any fallback method, the tool automatically updates its stored identifiers and adds the UID marker if missing. This self-healing behavior ensures reliable sync even after state database loss or iCloud identifier changes.
 
 ### State Tracking
-
-The tool uses `calendarItemExternalIdentifier` from EventKit as the stable identifier. This ID persists across app restarts and system reboots, ensuring reliable event tracking.
 
 State is stored in a SQLite database containing:
 - Source UID (from ICS)
 - Calendar item external identifier (from EventKit)
+- Event identifier (from EventKit)
 - Content hash (for change detection)
 - Sequence number (from ICS SEQUENCE property)
 - Last sync timestamp
+- Original ICS data
 
 ### Conflict Resolution
 
@@ -830,7 +843,7 @@ swift test --filter ICSParserTests/testBasicEvent
 
 ## Version
 
-Current version: 1.0.7
+Current version: 1.1.0
 
 ## License
 

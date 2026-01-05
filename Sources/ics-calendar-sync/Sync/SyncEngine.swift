@@ -83,9 +83,27 @@ actor SyncEngine {
             logger.info("Parsed \(icsEvents.count) events from ICS")
 
             // Step 2: Filter events by date window if configured
-            let filteredEvents = filterEventsByWindow(icsEvents)
-            if filteredEvents.count != icsEvents.count {
-                logger.info("Filtered to \(filteredEvents.count) events within date window")
+            let windowFilteredEvents = filterEventsByWindow(icsEvents)
+            if windowFilteredEvents.count != icsEvents.count {
+                logger.info("Filtered to \(windowFilteredEvents.count) events within date window")
+            }
+
+            // Step 2b: Deduplicate events with same UID (keep last occurrence - highest sequence wins)
+            // This prevents duplicates if ICS feed contains same event multiple times
+            var uniqueEvents: [String: ICSEvent] = [:]
+            for event in windowFilteredEvents {
+                if let existing = uniqueEvents[event.uid] {
+                    // Keep the one with higher sequence number, or the later one if equal
+                    if event.sequence >= existing.sequence {
+                        uniqueEvents[event.uid] = event
+                    }
+                } else {
+                    uniqueEvents[event.uid] = event
+                }
+            }
+            let filteredEvents = Array(uniqueEvents.values)
+            if filteredEvents.count != windowFilteredEvents.count {
+                logger.info("Deduplicated to \(filteredEvents.count) unique events")
             }
 
             // Step 3: Get current sync state
@@ -224,19 +242,67 @@ actor SyncEngine {
         let contentChanged = newHash != existingState.contentHash
         let sequenceChanged = icsEvent.sequence > existingState.sequence
 
-        guard contentChanged || sequenceChanged else {
+        // Find existing event in calendar first (we need it to check for UID marker)
+        // Try external ID first (most stable), then fall back to event identifier
+        var ekEvent: EKEvent? = nil
+
+        if !existingState.calendarItemId.isEmpty {
+            ekEvent = await calendarManager.findEvent(byExternalId: existingState.calendarItemId)
+        }
+
+        // Fallback to event identifier if external ID didn't work
+        if ekEvent == nil, let eventId = existingState.eventIdentifier, !eventId.isEmpty {
+            ekEvent = await calendarManager.findEvent(byEventId: eventId)
+        }
+
+        // Bulletproof fallback: search by ICS UID embedded in event notes
+        // This searches the ENTIRE calendar - most reliable as UID is stored in event itself
+        if ekEvent == nil {
+            logger.debug("Searching for event by embedded UID: \(icsEvent.uid)")
+            ekEvent = await calendarManager.findEvent(byICSUID: icsEvent.uid, in: calendar)
+        }
+
+        // Last resort: search by matching event properties (title, dates)
+        // This handles legacy events that don't have the UID marker
+        if ekEvent == nil {
+            logger.debug("Searching for event by properties: \(icsEvent.displayTitle)")
+            ekEvent = await calendarManager.findEvent(matching: icsEvent, in: calendar, config: mappingConfig)
+        }
+
+        // If found by any fallback method, update the stored identifiers for future lookups
+        if let foundEvent = ekEvent {
+            if let externalId = foundEvent.calendarItemExternalIdentifier,
+               !externalId.isEmpty,
+               externalId != existingState.calendarItemId {
+                try? await stateStore.updateCalendarItemId(
+                    uid: icsEvent.uid,
+                    calendarItemId: externalId,
+                    eventIdentifier: foundEvent.eventIdentifier
+                )
+            }
+        }
+
+        // Check if event needs UID marker migration
+        let needsUIDMarker = ekEvent != nil && !EventMapper.containsUIDMarker(ekEvent?.notes)
+
+        // If content unchanged AND event already has UID marker, skip update
+        if !contentChanged && !sequenceChanged && !needsUIDMarker {
             return .unchanged
         }
 
-        logger.info("Updating: \(icsEvent.displayTitle)")
+        // Log what we're doing
+        if needsUIDMarker && !contentChanged && !sequenceChanged {
+            logger.info("Migrating (adding UID marker): \(icsEvent.displayTitle)")
+        } else {
+            logger.info("Updating: \(icsEvent.displayTitle)")
+        }
 
         if dryRun {
             return .updated
         }
 
-        // Find existing event in calendar
-        if let ekEvent = await calendarManager.findEvent(byExternalId: existingState.calendarItemId) {
-            // Update existing event
+        if let ekEvent = ekEvent {
+            // Update existing event (this also adds UID marker via EventMapper.apply)
             try await calendarManager.updateEvent(ekEvent, from: icsEvent, config: mappingConfig)
 
             try await stateStore.updateEvent(
@@ -272,6 +338,35 @@ actor SyncEngine {
         mappingConfig: EventMapper.MappingConfig,
         dryRun: Bool
     ) async throws {
+        // Bulletproof check: search ENTIRE calendar by ICS UID embedded in notes
+        var existingEvent = await calendarManager.findEvent(byICSUID: icsEvent.uid, in: calendar)
+
+        // Fallback: check by matching properties (for legacy events without UID marker)
+        if existingEvent == nil {
+            existingEvent = await calendarManager.findEvent(matching: icsEvent, in: calendar, config: mappingConfig)
+        }
+
+        // If event already exists, update instead of creating duplicate
+        if let existingEvent = existingEvent {
+            logger.info("Found existing event, updating instead of creating: \(icsEvent.displayTitle)")
+
+            if !dryRun {
+                try await calendarManager.updateEvent(existingEvent, from: icsEvent, config: mappingConfig)
+                let contentHash = ContentHash.calculate(for: icsEvent)
+
+                try await stateStore.upsertEvent(
+                    uid: icsEvent.uid,
+                    calendarItemId: existingEvent.calendarItemExternalIdentifier ?? "",
+                    eventIdentifier: existingEvent.eventIdentifier,
+                    contentHash: contentHash,
+                    sequence: icsEvent.sequence,
+                    lastModified: icsEvent.lastModified,
+                    icsData: icsEvent.rawData
+                )
+            }
+            return
+        }
+
         logger.info("Creating: \(icsEvent.displayTitle)")
 
         if dryRun {
