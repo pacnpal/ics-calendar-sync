@@ -21,6 +21,9 @@ jobs:
         with:
           swift-version: "5.10"
 
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
       - name: Get version from tag
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
@@ -41,12 +44,31 @@ jobs:
           swift build -c release --arch arm64 --arch x86_64
           cp .build/apple/Products/Release/ics-calendar-sync artifacts/ics-calendar-sync-universal
 
-      - name: Create archives
+      - name: Build GUI App
+        run: |
+          # Generate Xcode project
+          xcodegen generate
+
+          # Build the app
+          xcodebuild -project ICSCalendarSyncGUI.xcodeproj \
+            -scheme "ICS Calendar Sync" \
+            -configuration Release \
+            -derivedDataPath build \
+            build
+
+          # Copy and zip the app
+          cp -R "build/Build/Products/Release/ICS Calendar Sync.app" artifacts/
+          cd artifacts
+          zip -r "ICS.Calendar.Sync.app-${{ steps.version.outputs.VERSION }}.zip" "ICS Calendar Sync.app"
+          rm -rf "ICS Calendar Sync.app"
+
+      - name: Create CLI archives
         run: |
           cd artifacts
           for binary in ics-calendar-sync-*; do
             chmod +x "$binary"
             zip "${binary}-${{ steps.version.outputs.VERSION }}.zip" "$binary"
+            rm "$binary"
           done
 
       - name: Generate checksums
@@ -63,5 +85,6 @@ jobs:
             ics-calendar-sync-arm64-${{ steps.version.outputs.VERSION }}.zip \
             ics-calendar-sync-x86_64-${{ steps.version.outputs.VERSION }}.zip \
             ics-calendar-sync-universal-${{ steps.version.outputs.VERSION }}.zip \
+            ICS.Calendar.Sync.app-${{ steps.version.outputs.VERSION }}.zip \
             checksums-${{ steps.version.outputs.VERSION }}.txt \
             --clobber

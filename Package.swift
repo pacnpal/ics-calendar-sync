@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "ics-calendar-sync",
     platforms: [
-        .macOS(.v13)  // Minimum for modern async/await and EventKit APIs
+        .macOS(.v14)  // Minimum for SwiftUI MenuBarExtra and SettingsLink
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.5.0"),
@@ -18,10 +18,23 @@ let package = Package(
                 .product(name: "SQLite", package: "SQLite.swift"),
             ]
         ),
+        .executableTarget(
+            name: "ICSCalendarSyncGUI",
+            dependencies: [
+                .product(name: "SQLite", package: "SQLite.swift"),
+            ]
+        ),
         .testTarget(
             name: "ics-calendar-syncTests",
             dependencies: ["ics-calendar-sync"],
             resources: [.copy("Fixtures")]
+        ),
+        .testTarget(
+            name: "ICSCalendarSyncGUITests",
+            dependencies: [
+                "ICSCalendarSyncGUI",
+                .product(name: "SQLite", package: "SQLite.swift"),
+            ]
         ),
     ]
 )

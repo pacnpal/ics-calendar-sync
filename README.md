@@ -1,14 +1,41 @@
 # ICS Calendar Sync
 
-A robust, enterprise-quality Swift command-line tool that synchronizes events from ICS calendar subscriptions to your macOS Calendar via EventKit, with full support for delta and incremental updates.
+A robust, enterprise-quality Swift tool that synchronizes events from ICS calendar subscriptions to your macOS Calendar via EventKit, with full support for delta and incremental updates.
+
+**Now available as both a native macOS menu bar app and a powerful command-line tool.**
+
+## What's New in v2.0
+
+- **Native macOS Menu Bar App**: A beautiful SwiftUI-based GUI for managing multiple calendar feeds
+- **Multi-Feed Support**: Sync multiple ICS calendars with independent settings
+- **Per-Feed Notifications**: Control notifications for each feed individually
+- **Calendar Picker**: Browse and select from your system calendars via EventKit
+- **Default Calendar Setting**: Pre-select your preferred calendar for new feeds
+- **Native Notifications**: Uses macOS UserNotifications framework (no AppleScript)
+- **Calendar Access Detection**: Warns you if calendar permissions are missing
 
 ## Features
 
+### Core Features
 - **Zero Authentication Hassle**: Uses native macOS calendar permissions with no app-specific passwords or OAuth required
 - **Automatic iCloud Sync**: Events sync to all your Apple devices via iCloud
 - **Smart Delta Sync**: Only creates, updates, or deletes events that have changed
 - **Bulletproof Deduplication**: Multi-layer event matching ensures no duplicates, even if iCloud changes event identifiers
 - **Full ICS Support**: Handles recurring events, timezones, alarms, and all standard iCalendar properties
+
+### GUI App Features (New in v2.0)
+- **Menu Bar App**: Lives in your menu bar for quick access
+- **Multi-Feed Management**: Add, edit, delete, and toggle multiple ICS feeds
+- **Visual Calendar Picker**: Select target calendars from a dropdown showing all your calendars
+- **Per-Feed Settings**: Independent sync intervals, notifications, and orphan deletion settings
+- **Service Control**: Start/stop background sync service from the GUI
+- **Status Overview**: See sync status, event counts, and last sync time at a glance
+- **Calendar Access Warning**: Alerts you if calendar permissions need to be granted
+- **Import/Export Configs**: Export your configuration to JSON or import from file (backwards compatible with CLI configs)
+- **View Logs**: Quick access to log files for troubleshooting
+- **Reset Sync State**: Clear sync state to start fresh without losing calendar events
+
+### CLI Features
 - **Background Sync**: Run as a daemon or install as a launchd service
 - **Interactive Setup**: User-friendly setup wizard guides you through configuration
 - **Non-Interactive Mode**: Scriptable setup for automation and CI/CD pipelines
@@ -22,11 +49,49 @@ A robust, enterprise-quality Swift command-line tool that synchronizes events fr
 
 ## Installation
 
-### Pre-built Binary (Recommended)
+### GUI App (Recommended for Most Users)
+
+#### Option 1: Download Pre-built App
+
+Download `ICS.Calendar.Sync.app.zip` from the [Releases page](https://github.com/pacnpal/ics-calendar-sync/releases).
+
+1. Extract the zip file
+2. Drag **ICS Calendar Sync.app** to your Applications folder
+3. Launch the app - it will appear in your menu bar
+4. On first launch, grant calendar access when prompted
+
+#### Option 2: Build from Source
+
+Requires Xcode 15.0+ with Swift 5.9+ and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+
+```bash
+# Clone the repository
+git clone https://github.com/pacnpal/ics-calendar-sync.git
+cd ics-calendar-sync
+
+# Install XcodeGen if needed
+brew install xcodegen
+
+# Generate Xcode project
+xcodegen generate
+
+# Build the app
+xcodebuild -project ICSCalendarSyncGUI.xcodeproj -scheme "ICS Calendar Sync" -configuration Release build
+
+# The app will be in DerivedData. To copy to Applications:
+cp -R ~/Library/Developer/Xcode/DerivedData/ICSCalendarSyncGUI-*/Build/Products/Release/"ICS Calendar Sync.app" /Applications/
+```
+
+Or use the convenience script:
+```bash
+./scripts/build-app.sh
+```
+
+### CLI Tool
+
+#### Pre-built Binary
 
 Download the latest release from the [Releases page](https://github.com/pacnpal/ics-calendar-sync/releases).
-
-#### Which binary should I download?
 
 | Your Mac | Download | How to check |
 |----------|----------|--------------|
@@ -34,16 +99,10 @@ Download the latest release from the [Releases page](https://github.com/pacnpal/
 | Intel | `x86_64` | Apple menu > About This Mac shows "Processor: Intel" |
 | **Not sure** | `universal` | Works on all Macs |
 
-#### Installation steps
-
-1. Download the appropriate `.zip` file from the [Releases page](https://github.com/pacnpal/ics-calendar-sync/releases)
-
-2. Open Terminal and run the following commands (assuming downloaded to ~/Downloads):
-
 ```bash
 # Extract the zip (replace ARCH with arm64, x86_64, or universal)
 cd ~/Downloads
-unzip ics-calendar-sync-ARCH-v1.1.2.zip
+unzip ics-calendar-sync-ARCH-v2.0.0.zip
 
 # Remove quarantine attribute
 xattr -d com.apple.quarantine ics-calendar-sync-*
@@ -55,30 +114,7 @@ sudo install -m 755 ics-calendar-sync-* /usr/local/bin/ics-calendar-sync
 ics-calendar-sync --version
 ```
 
-#### macOS Security Warning
-
-macOS quarantines files downloaded from the internet. The `xattr` command above removes this. If you skip that step, you have two alternatives:
-
-**Option 1: Right-click to open (macOS 14 and earlier)**
-
-1. Right-click (or Control-click) the binary in Finder
-2. Select **Open** from the context menu
-3. Click **Open** in the dialog
-
-Note: This method does not work on macOS 15 or later.
-
-**Option 2: Allow via System Settings**
-
-If you see "cannot be opened because it is from an unidentified developer":
-
-1. Open **System Settings** then **Privacy & Security**
-2. Scroll down to find the blocked app message
-3. Click **Allow Anyway**
-4. Run the command again and click **Open** when prompted
-
-### From Source
-
-Requires Xcode 15.0+ and Swift 5.9+.
+#### From Source
 
 ```bash
 # Clone the repository
@@ -88,49 +124,155 @@ cd ics-calendar-sync
 # Build the release binary
 swift build -c release
 
-# Install to your local bin (optional)
-cp .build/release/ics-calendar-sync ~/.local/bin/
+# Install to your local bin
+sudo install -m 755 .build/release/ics-calendar-sync /usr/local/bin/
 
-# Make sure ~/.local/bin is in your PATH
-export PATH="$HOME/.local/bin:$PATH"
+# Verify installation
+ics-calendar-sync --version
 ```
 
-### Build Universal Binary (Intel + Apple Silicon)
+#### macOS Security Warning
 
-```bash
-swift build -c release --arch arm64 --arch x86_64
-```
+macOS quarantines files downloaded from the internet. The `xattr` command above removes this. If you skip that step:
+
+**Option 1: Allow via System Settings**
+
+1. Open **System Settings** then **Privacy & Security**
+2. Scroll down to find the blocked app message
+3. Click **Allow Anyway**
+4. Run the command again and click **Open** when prompted
 
 ## Quick Start
 
-### 1. Run the Setup Wizard
+### GUI App
+
+1. **Launch the app** - Click the calendar icon in your menu bar
+2. **Open Settings** - Click "Settings..." in the dropdown menu
+3. **Add a feed** - Click "Add Feed" and enter:
+   - A name for the feed (optional)
+   - The ICS URL
+   - Select a target calendar from the dropdown
+   - Configure sync interval and options
+4. **Enable notifications** (optional) - Toggle global notifications and per-feed settings
+5. **Start syncing** - Click "Sync All Feeds" or enable the background service
+
+### CLI
 
 ```bash
+# Run the setup wizard
 ics-calendar-sync setup
-```
 
-The interactive wizard will guide you through:
-- Granting calendar access
-- Entering your ICS subscription URL
-- Selecting a target calendar
-- Configuring sync options
-- Setting up background sync
-
-**Important**: On first run, macOS will prompt you to grant calendar access. You **must** click "Allow" or "OK" when prompted, otherwise the app cannot read or write to your calendars. See [Calendar Access](#calendar-access) in troubleshooting if you accidentally denied access.
-
-### 2. Manual Sync
-
-```bash
+# Manual sync
 ics-calendar-sync sync
-```
 
-### 3. Enable Background Sync
-
-```bash
+# Enable background sync
 ics-calendar-sync install
 ```
 
-## Usage
+## GUI App Guide
+
+### Menu Bar
+
+Click the calendar icon in your menu bar to see:
+
+- **Status**: Current sync status and last sync time
+- **Event count**: Total number of synced events
+- **Feed list**: Quick view of your configured feeds (up to 5)
+- **Actions**:
+  - Sync All Feeds (Cmd+R)
+  - Refresh Status
+  - Start/Stop Service
+  - Settings... (Cmd+,)
+  - View Logs...
+  - Quit (Cmd+Q)
+
+### Settings Window
+
+The settings window has three sections:
+
+#### 1. Calendar Feeds
+
+A list of all your configured feeds showing:
+- Enable/disable toggle
+- Feed name and target calendar
+- Sync interval
+- Edit and delete buttons
+
+**Actions:**
+- **Import**: Load a configuration from a JSON file (compatible with v1.x CLI configs)
+- **Export**: Save your current configuration to a JSON file
+- **Add Feed**: Create a new feed configuration
+
+#### 2. Global Settings
+
+- **Notifications**: Master toggle for all notifications (overrides per-feed settings when off)
+- **Default Calendar**: Pre-selects this calendar when adding new feeds
+- **Service Status**: Shows if the background sync service is running
+- **View Logs**: Opens the logs folder in Finder
+- **Reset Sync State**: Clears all sync state (events in calendars are not affected)
+
+#### 3. Status Bar
+
+Shows at-a-glance information:
+- Number of feeds (total and enabled)
+- Total event count
+- Last sync time
+- App version
+
+### Feed Editor
+
+When adding or editing a feed:
+
+| Field | Description |
+|-------|-------------|
+| Name | Optional nickname for the feed |
+| ICS URL | The calendar subscription URL |
+| Calendar | Target calendar (dropdown of all system calendars) |
+| Interval | How often to sync (5, 15, 30, or 60 minutes) |
+| Delete orphaned events | Remove events that are no longer in the ICS |
+| Show notifications | Send notifications for this feed's sync results |
+| Enabled | Whether this feed should be synced |
+
+### Calendar Access
+
+The app needs permission to access your calendars. If access is not granted:
+
+1. An orange warning banner appears in Settings
+2. Click **Open Settings** to go directly to System Settings > Privacy & Security > Calendars
+3. Enable access for **ICS Calendar Sync**
+4. Return to the app - the calendar list will populate automatically
+
+### Configuration Storage
+
+The GUI app stores its configuration at:
+```
+~/.config/ics-calendar-sync/gui-config.json
+```
+
+This is separate from the CLI configuration to allow both to operate independently.
+
+### CLI and GUI Compatibility
+
+The GUI app and CLI tool are **100% feature compatible** and share the same core sync engine:
+
+| Feature | GUI | CLI |
+|---------|-----|-----|
+| Sync calendar feeds | ✅ | ✅ |
+| Background service | ✅ | ✅ |
+| Multiple feeds | ✅ Native support | Use multiple config files |
+| Notifications | ✅ Native | ✅ macOS notifications |
+| Import/Export configs | ✅ | Manual JSON editing |
+| View logs | ✅ One-click | `tail -f ~/Library/Logs/...` |
+| Reset sync state | ✅ One-click | `ics-calendar-sync reset --force` |
+| Migrate UID markers | Via CLI | `ics-calendar-sync migrate` |
+| List tracked events | Via CLI | `ics-calendar-sync list` |
+| Dry run mode | Via CLI | `ics-calendar-sync sync --dry-run` |
+
+**Config Migration:** The GUI can import configurations from both v2.0 GUI format and v1.x CLI format. When importing a CLI config, it automatically converts the single-feed format to a GUI feed entry.
+
+**Shared State:** Both apps use the same SQLite state database at `~/.local/share/ics-calendar-sync/state.db`, so sync history is shared.
+
+## CLI Usage
 
 ### Commands
 
@@ -160,133 +302,62 @@ ics-calendar-sync install
 -h, --help             Show help
 ```
 
-### Command-Specific Options
-
-#### sync
-
-```
---full                 Force full sync, ignoring existing state
-```
-
-#### daemon
-
-```
---interval <minutes>   Override sync interval from configuration
-```
-
-#### setup
-
-```
---non-interactive      Use defaults and flags instead of interactive prompts
---ics-url <url>        ICS subscription URL (required in non-interactive mode)
---calendar <name>      Target calendar name [default: Subscribed Events]
---skip-sync            Skip initial sync after setup
-```
-
-#### list
-
-```
--l <count>             Maximum number of events to show [default: 20]
---all                  Show all events
-```
-
-#### reset
-
-```
---force                Required to confirm reset operation
-```
-
-#### migrate
-
-The `migrate` command adds UID markers to existing calendar events that were created before the bulletproof deduplication system was implemented. This ensures all events can be reliably tracked even if iCloud changes their EventKit identifiers.
-
-```bash
-# Dry run first (recommended) - shows what would be migrated
-ics-calendar-sync migrate --dry-run
-
-# Run migration
-ics-calendar-sync migrate
-
-# With verbose output (shows unmatched events)
-ics-calendar-sync migrate -v
-
-# Clean up duplicate events (events matching ICS but without UID markers)
-ics-calendar-sync migrate --cleanup-duplicates
-
-# Dry run cleanup first
-ics-calendar-sync migrate --cleanup-duplicates --dry-run
-```
-
-The command:
-1. Loads tracked events from the sync state database
-2. Looks up each event in the calendar using the same fallback chain as sync:
-   - First by stored calendar item ID
-   - Then by ICS UID embedded in notes
-   - Finally by property matching (title + date)
-3. For each event without a `[ICS-SYNC-UID:...]` marker, adds the UID marker
-
-The `--cleanup-duplicates` flag additionally searches for and deletes events that:
-- Match ICS events by title and time (within 1 hour tolerance)
-- Do NOT have a UID marker (indicating they're orphaned duplicates)
-
-Output shows:
-- `Already has UID`: Events that were previously migrated
-- `Migrated`: Events that got UID markers added
-- `Not in calendar`: Events tracked in state but not found in calendar
-- `No ICS match`: Events in state with no corresponding ICS event
-- `Errors`: Any failed updates
-- `Duplicates deleted`: (with --cleanup-duplicates) Orphaned duplicates removed
-
 ### Examples
 
 ```bash
 # Run sync with verbose output
 ics-calendar-sync sync -v
 
-# Very verbose output for debugging
-ics-calendar-sync sync -vv
-
 # Dry run to see what would change
 ics-calendar-sync sync --dry-run
 
-# Force full resync (ignores state, re-syncs everything)
+# Force full resync
 ics-calendar-sync sync --full
 
 # Run daemon with custom interval
 ics-calendar-sync daemon --interval 30
 
-# Check sync status
-ics-calendar-sync status
-
-# Get status as JSON (useful for monitoring)
+# Check sync status as JSON
 ics-calendar-sync status --json
-
-# List tracked events
-ics-calendar-sync list
-
-# List all tracked events
-ics-calendar-sync list --all
 
 # List available calendars
 ics-calendar-sync calendars
 
-# Reset sync state
-ics-calendar-sync reset --force
-
-# Non-interactive setup for automation
+# Non-interactive setup
 ics-calendar-sync setup --non-interactive \
   --ics-url "https://example.com/calendar.ics" \
   --calendar "Work Events"
-
-# Non-interactive setup without initial sync
-ics-calendar-sync setup --non-interactive \
-  --ics-url "https://example.com/calendar.ics" \
-  --skip-sync
 ```
 
 ## Configuration
 
-Configuration is stored in `~/.config/ics-calendar-sync/config.json`:
+### GUI Configuration
+
+The GUI stores multi-feed configuration in `~/.config/ics-calendar-sync/gui-config.json`:
+
+```json
+{
+  "feeds": [
+    {
+      "id": "uuid-here",
+      "name": "Work Calendar",
+      "icsURL": "https://example.com/work.ics",
+      "calendarName": "Work",
+      "syncInterval": 15,
+      "deleteOrphans": true,
+      "isEnabled": true,
+      "notificationsEnabled": true
+    }
+  ],
+  "notifications_enabled": true,
+  "default_calendar": "Personal",
+  "global_sync_interval": 15
+}
+```
+
+### CLI Configuration
+
+The CLI uses `~/.config/ics-calendar-sync/config.json`:
 
 ```json
 {
@@ -310,22 +381,13 @@ Configuration is stored in `~/.config/ics-calendar-sync/config.json`:
     "window_days_future": 365,
     "sync_alarms": true
   },
-  "state": {
-    "path": "~/.local/share/ics-calendar-sync/state.db"
-  },
-  "logging": {
-    "level": "info",
-    "format": "text"
-  },
   "daemon": {
     "interval_minutes": 15
   },
   "notifications": {
     "enabled": false,
     "on_success": false,
-    "on_failure": true,
-    "on_partial": true,
-    "sound": "default"
+    "on_failure": true
   }
 }
 ```
@@ -359,19 +421,6 @@ Configuration is stored in `~/.config/ics-calendar-sync/config.json`:
 | `window_days_future` | integer | `365` | Sync events this many days in the future |
 | `sync_alarms` | boolean | `true` | Sync event alarms/reminders |
 
-#### state
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `path` | string | `~/.local/share/ics-calendar-sync/state.db` | Path to SQLite state database |
-
-#### logging
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `level` | string | `"info"` | Log level: `debug`, `info`, `warning`, `error` |
-| `format` | string | `"text"` | Output format: `text` or `json` |
-
 #### daemon
 
 | Field | Type | Default | Description |
@@ -385,49 +434,20 @@ Configuration is stored in `~/.config/ics-calendar-sync/config.json`:
 | `enabled` | boolean | `false` | Enable macOS notifications |
 | `on_success` | boolean | `false` | Notify on successful sync |
 | `on_failure` | boolean | `true` | Notify when sync fails |
-| `on_partial` | boolean | `true` | Notify when sync completes with errors |
-| `sound` | string | `"default"` | Notification sound (or `null` for silent) |
-
-**Example notifications configuration:**
-
-```json
-{
-  "notifications": {
-    "enabled": true,
-    "on_success": false,
-    "on_failure": true,
-    "on_partial": true,
-    "sound": "default"
-  }
-}
-```
-
-Available sounds are located in `/System/Library/Sounds/` (e.g., `"Ping"`, `"Glass"`, `"Blow"`). Set to `null` to disable sounds.
 
 ### Environment Variables
 
-You can use environment variables in the configuration with `${VAR_NAME}` syntax:
-
-- `ICS_AUTH_TOKEN`: Bearer token for authenticated feeds
-- `ICS_USERNAME`: Username for basic auth
-- `ICS_PASSWORD`: Password for basic auth
-
-Example with environment variable:
+Use environment variables in CLI configuration with `${VAR_NAME}` syntax:
 
 ```json
 {
   "source": {
-    "url": "https://example.com/calendar.ics",
     "headers": {
       "Authorization": "Bearer ${ICS_AUTH_TOKEN}"
     }
   }
 }
 ```
-
-### Keychain Storage
-
-Credentials can be stored securely in the macOS Keychain. The setup wizard offers this option, or you can configure it programmatically using the KeychainHelper API.
 
 ## Authentication
 
@@ -439,18 +459,6 @@ Credentials can be stored securely in the macOS Keychain. The setup wizard offer
     "url": "https://example.com/calendar.ics",
     "headers": {
       "Authorization": "Bearer your-token-here"
-    }
-  }
-}
-```
-
-Or using environment variable:
-
-```json
-{
-  "source": {
-    "headers": {
-      "Authorization": "Bearer ${ICS_AUTH_TOKEN}"
     }
   }
 }
@@ -468,65 +476,35 @@ Or using environment variable:
 }
 ```
 
-You can generate the base64 credentials with:
-
+Generate base64 credentials:
 ```bash
 echo -n "username:password" | base64
 ```
 
-### Custom Headers
-
-Any custom headers can be added to requests:
-
-```json
-{
-  "source": {
-    "headers": {
-      "X-Api-Key": "your-api-key",
-      "X-Custom-Header": "custom-value"
-    }
-  }
-}
-```
-
 ## Background Service
 
-### Install as launchd Service
+### Using the GUI
+
+1. Open the menu bar dropdown
+2. Click **Start Service** to begin background sync
+3. Click **Stop Service** to pause background sync
+
+The service status is shown in the Settings window.
+
+### Using the CLI
 
 ```bash
+# Install as launchd service
 ics-calendar-sync install
-```
 
-This creates a launchd plist at `~/Library/LaunchAgents/com.ics-calendar-sync.plist` and starts the service.
-
-### Manage the Service
-
-```bash
 # Check if running
 launchctl list | grep ics-calendar-sync
 
 # View logs
 tail -f ~/Library/Logs/ics-calendar-sync/stdout.log
 
-# Stop service
-launchctl unload ~/Library/LaunchAgents/com.ics-calendar-sync.plist
-
-# Start service
-launchctl load ~/Library/LaunchAgents/com.ics-calendar-sync.plist
-
 # Remove service
 ics-calendar-sync uninstall
-```
-
-### View Logs
-
-```bash
-# Using macOS unified logging
-log show --predicate 'subsystem == "com.ics-calendar-sync"' --last 1h
-
-# Or view stdout/stderr logs
-tail -f ~/Library/Logs/ics-calendar-sync/stdout.log
-tail -f ~/Library/Logs/ics-calendar-sync/stderr.log
 ```
 
 ## How It Works
@@ -535,286 +513,85 @@ tail -f ~/Library/Logs/ics-calendar-sync/stderr.log
 
 1. **Fetch**: Download ICS feed from source URL
 2. **Parse**: Extract all VEVENT components
-3. **Deduplicate**: Remove duplicate UIDs from the feed (keeps highest sequence number)
-4. **Hash**: Calculate content hash for each event using SHA-256
+3. **Deduplicate**: Remove duplicate UIDs (keeps highest sequence number)
+4. **Hash**: Calculate content hash using SHA-256
 5. **Compare**: Match against stored state to detect changes
-6. **Detect Changes**:
-   - New events (UID not in state): Create in calendar
-   - Modified events (hash changed or sequence increased): Update in calendar
-   - Missing events (in state but not in ICS): Delete from calendar (if configured)
-7. **Apply**: Execute creates, updates, and deletes via EventKit
-8. **Persist**: Store new state to SQLite database
+6. **Apply**: Execute creates, updates, and deletes via EventKit
+7. **Persist**: Store new state to SQLite database
 
 ### Bulletproof Event Matching
 
-To ensure events are never duplicated, even when iCloud changes EventKit identifiers, the tool uses a multi-layer matching system:
+To prevent duplicates even when iCloud changes EventKit identifiers:
 
-1. **Calendar Item External ID**: The primary stable identifier from EventKit
-2. **Event Identifier**: Secondary EventKit identifier (available immediately after save)
-3. **Embedded UID Marker**: Each synced event has `[ICS-SYNC-UID:xxx]` embedded in its notes field, enabling lookup even if EventKit IDs change
-4. **Fuzzy Property Match**: For legacy events without the UID marker, matches by title (contains match) and time (within 5 minutes tolerance)
-
-When an event is found via any fallback method, the tool automatically updates its stored identifiers and adds the UID marker if missing. This self-healing behavior ensures reliable sync even after state database loss or iCloud identifier changes.
+1. **Calendar Item External ID**: Primary stable identifier
+2. **Event Identifier**: Secondary EventKit identifier
+3. **Embedded UID Marker**: `[ICS-SYNC-UID:xxx]` in notes field
+4. **Fuzzy Property Match**: Title and time matching for legacy events
 
 ### State Tracking
 
-State is stored in a SQLite database containing:
+State is stored in SQLite containing:
 - Source UID (from ICS)
-- Calendar item external identifier (from EventKit)
-- Event identifier (from EventKit)
+- Calendar item identifiers (from EventKit)
 - Content hash (for change detection)
-- Sequence number (from ICS SEQUENCE property)
+- Sequence number (from ICS)
 - Last sync timestamp
-- Original ICS data
-
-### Conflict Resolution
-
-The source ICS feed always wins. If an event is modified both in the ICS and locally in Calendar.app, the ICS version takes precedence on the next sync.
-
-### Recurring Events
-
-The tool fully supports iCalendar recurrence rules (RRULE), including:
-- Daily, weekly, monthly, and yearly patterns
-- By-day, by-month, by-monthday modifiers
-- Exception dates (EXDATE)
-- Recurrence IDs for modified instances
 
 ## Troubleshooting
 
 ### Calendar Access
 
-This app requires access to your calendars via macOS Calendar permissions. When you first run the app, macOS will display a permission dialog asking to allow access.
+#### GUI App
 
-#### Granting Access on First Run
+If you see the orange "Calendar Access Required" banner:
 
-When prompted with "ics-calendar-sync would like to access your calendars":
-- Click **OK** or **Allow** to grant access
-- If you click **Don't Allow**, the app will not be able to sync events
+1. Click **Open Settings** in the banner
+2. Enable **ICS Calendar Sync** in the Calendars list
+3. Return to the app
 
-#### If You Accidentally Denied Access
+#### CLI Tool
 
-If you see "Calendar access denied" or "Calendar access not determined":
+If you see "Calendar access denied":
 
-1. Open **System Settings** (or System Preferences on older macOS)
-2. Go to **Privacy & Security** then **Calendars**
-3. Find **Terminal** (or **iTerm**, or whatever terminal app you use)
-4. Toggle the switch **ON** to enable calendar access
-5. You may need to quit and restart your terminal app
-6. Re-run `ics-calendar-sync setup` or `ics-calendar-sync sync`
-
-#### Calendar Access for Background Service
-
-If you installed the background service with `ics-calendar-sync install`, the launchd service runs under your user account and inherits calendar permissions from Terminal. If background sync is not working:
-
-1. Run `ics-calendar-sync sync` manually from Terminal first to trigger the permission prompt
-2. Grant access when prompted
-3. The background service should now work
-
-#### Full Disk Access (macOS Sonoma and later)
-
-On macOS Sonoma (14.0) and later, some calendar operations may require Full Disk Access:
-
-1. Open **System Settings** then **Privacy & Security** then **Full Disk Access**
-2. Click the **+** button
-3. Navigate to your terminal app (e.g., `/Applications/Utilities/Terminal.app`)
-4. Add it to the list and ensure it's enabled
-
-#### Still Having Permission Issues?
-
-If you continue to have calendar access problems:
-
-1. Check if the Calendar app itself is working (open Calendar.app and verify your calendars appear)
-2. Try signing out and back into iCloud in System Settings if using iCloud calendars
-3. Run with verbose output to see detailed errors: `ics-calendar-sync sync -vv`
-4. Check the system console for permission-related errors: `log show --predicate 'subsystem == "com.apple.TCC"' --last 5m`
+1. Open **System Settings** > **Privacy & Security** > **Calendars**
+2. Enable your terminal app (Terminal, iTerm, etc.)
+3. Restart your terminal and run the command again
 
 ### Events Not Appearing
 
-1. Check sync status: `ics-calendar-sync status`
+1. Check sync status: `ics-calendar-sync status` or view in GUI
 2. Verify calendar exists: `ics-calendar-sync calendars`
 3. Run with verbose output: `ics-calendar-sync sync -vv`
-4. Check if events are in date window (default: 30 days past, 365 days future)
-5. Verify the ICS URL is accessible: `curl -I "your-ics-url"`
-
-### Background Service & Daemon
-
-#### Checking if the Service is Running
-
-```bash
-# Check if the service is loaded and running
-launchctl list | grep ics-calendar-sync
-
-# Expected output when running:
-# 12345  0  com.ics-calendar-sync
-# (PID)  (exit code)  (label)
-
-# If no output, the service is not loaded
-```
-
-#### Service Not Starting
-
-If `ics-calendar-sync install` succeeded but the service isn't running:
-
-1. **Check if the plist exists:**
-   ```bash
-   ls -la ~/Library/LaunchAgents/com.ics-calendar-sync.plist
-   ```
-
-2. **Verify the plist is valid:**
-   ```bash
-   plutil -lint ~/Library/LaunchAgents/com.ics-calendar-sync.plist
-   ```
-
-3. **Check launchd for errors:**
-   ```bash
-   launchctl error $(launchctl list | grep ics-calendar-sync | awk '{print $2}')
-   ```
-
-4. **View service logs:**
-   ```bash
-   cat ~/Library/Logs/ics-calendar-sync/stderr.log
-   cat ~/Library/Logs/ics-calendar-sync/stdout.log
-   ```
-
-5. **Try running manually to see errors:**
-   ```bash
-   ics-calendar-sync daemon
-   ```
-
-#### Manually Starting/Stopping the Service
-
-```bash
-# Stop the service
-launchctl unload ~/Library/LaunchAgents/com.ics-calendar-sync.plist
-
-# Start the service
-launchctl load ~/Library/LaunchAgents/com.ics-calendar-sync.plist
-
-# Restart (stop then start)
-launchctl unload ~/Library/LaunchAgents/com.ics-calendar-sync.plist && \
-launchctl load ~/Library/LaunchAgents/com.ics-calendar-sync.plist
-```
-
-#### Service Keeps Stopping
-
-If the service starts but stops unexpectedly:
-
-1. **Check exit codes:**
-   ```bash
-   launchctl list | grep ics-calendar-sync
-   # Second column shows last exit code (0 = success)
-   ```
-
-2. **Common exit codes:**
-   - `0`: Normal exit
-   - `1`: General error (check stderr.log)
-   - `78`: Configuration error
-   - `126`: Permission denied
-
-3. **Check for crash logs:**
-   ```bash
-   ls ~/Library/Logs/DiagnosticReports/ | grep ics-calendar-sync
-   ```
-
-#### Reinstalling the Service
-
-If the service is in a bad state:
-
-```bash
-# Uninstall completely
-ics-calendar-sync uninstall
-
-# Verify removal
-launchctl list | grep ics-calendar-sync
-ls ~/Library/LaunchAgents/com.ics-calendar-sync.plist
-
-# Reinstall
-ics-calendar-sync install
-```
-
-#### Service Not Syncing Events
-
-If the service is running but events aren't syncing:
-
-1. **Check sync status:**
-   ```bash
-   ics-calendar-sync status
-   ```
-
-2. **Verify calendar permissions** (see [Calendar Access](#calendar-access) above)
-
-3. **Check the logs for sync errors:**
-   ```bash
-   tail -100 ~/Library/Logs/ics-calendar-sync/stdout.log
-   ```
-
-4. **Test manual sync:**
-   ```bash
-   ics-calendar-sync sync -v
-   ```
-
-#### Viewing Live Logs
-
-To watch the service logs in real-time:
-
-```bash
-# Watch stdout
-tail -f ~/Library/Logs/ics-calendar-sync/stdout.log
-
-# Watch stderr
-tail -f ~/Library/Logs/ics-calendar-sync/stderr.log
-
-# Watch both
-tail -f ~/Library/Logs/ics-calendar-sync/*.log
-```
-
-### SSL Certificate Errors
-
-If you are connecting to a server with a self-signed certificate:
-
-```json
-{
-  "source": {
-    "verify_ssl": false
-  }
-}
-```
-
-Note: Disabling SSL verification is not recommended for production use.
+4. Check if events are within the date window
 
 ### Reset and Start Fresh
 
 ```bash
-# Reset sync state (events in calendar are not affected)
+# Reset sync state
 ics-calendar-sync reset --force
 
 # Run full sync
 ics-calendar-sync sync --full
 ```
 
-### Configuration Errors
-
-Validate your configuration file:
-
-```bash
-ics-calendar-sync validate
-```
-
-This will report any syntax errors or invalid values.
-
 ## Development
 
 ### Building
 
 ```bash
-# Debug build
+# Build CLI (debug)
 swift build
 
-# Release build
+# Build CLI (release)
 swift build -c release
 
-# Universal binary (Intel + Apple Silicon)
-swift build -c release --arch arm64 --arch x86_64
+# Build GUI app (requires XcodeGen)
+brew install xcodegen       # Install XcodeGen if needed
+xcodegen generate           # Generate Xcode project
+xcodebuild -project ICSCalendarSyncGUI.xcodeproj -scheme "ICS Calendar Sync" -configuration Release build
+
+# Or use the convenience script
+./scripts/build-app.sh
 
 # Run tests
 swift test
@@ -825,67 +602,84 @@ swift test
 ```
 ics-calendar-sync/
 ├── Package.swift
-├── Sources/ics-calendar-sync/
-│   ├── CLI/
-│   │   ├── Arguments.swift      # Command-line argument definitions
-│   │   ├── Commands.swift       # Command implementations
-│   │   └── SetupWizard.swift    # Interactive setup wizard
-│   ├── ICS/
-│   │   ├── ICSParser.swift      # ICS file parser
-│   │   ├── ICSEvent.swift       # Event data model
-│   │   └── ICSFetcher.swift     # HTTP fetching logic
-│   ├── Calendar/
-│   │   ├── CalendarManager.swift    # EventKit integration
-│   │   ├── EventMapper.swift        # ICS to EventKit mapping
-│   │   └── RecurrenceMapper.swift   # Recurrence rule mapping
-│   ├── Sync/
-│   │   ├── SyncEngine.swift     # Main sync orchestration
-│   │   ├── SyncState.swift      # SQLite state management
-│   │   └── ContentHash.swift    # Content hashing for change detection
-│   ├── Config/
-│   │   ├── Configuration.swift  # Configuration model and loading
-│   │   └── KeychainHelper.swift # Secure credential storage
-│   ├── Scheduling/
-│   │   ├── Daemon.swift         # Background daemon runner
-│   │   ├── LaunchdGenerator.swift   # launchd plist generation
-│   │   └── SignalHandler.swift      # Unix signal handling
-│   └── Utilities/
-│       ├── Errors.swift         # Error types
-│       ├── Extensions.swift     # Swift extensions
-│       └── Logger.swift         # Logging infrastructure
+├── project.yml                    # XcodeGen spec for GUI
+├── scripts/
+│   └── build-app.sh              # GUI build script
+├── Resources/
+│   ├── Info.plist                # GUI app info
+│   └── ICSCalendarSyncGUI.entitlements
+├── Sources/
+│   ├── ics-calendar-sync/        # CLI source
+│   │   ├── CLI/
+│   │   ├── ICS/
+│   │   ├── Calendar/
+│   │   ├── Sync/
+│   │   ├── Config/
+│   │   └── Utilities/
+│   └── ICSCalendarSyncGUI/       # GUI source
+│       ├── App.swift             # Main app entry
+│       ├── SyncViewModel.swift   # State management
+│       ├── MenuBarView.swift     # Menu bar UI
+│       └── SettingsView.swift    # Settings window
 └── Tests/
-    └── ics-calendar-syncTests/
-        ├── Fixtures/            # Test ICS files
-        ├── ICSParserTests.swift
-        ├── ContentHashTests.swift
-        └── RecurrenceMapperTests.swift
+    ├── ics-calendar-syncTests/   # CLI tests
+    └── ICSCalendarSyncGUITests/  # GUI tests
 ```
 
 ### Running Tests
 
 ```bash
-# Run all tests
+# All tests
 swift test
 
-# With verbose output
-swift test --verbose
+# CLI tests only
+swift test --filter ics-calendar-syncTests
 
-# Specific test class
-swift test --filter ICSParserTests
+# GUI tests only
+swift test --filter ICSCalendarSyncGUITests
 
-# Specific test method
-swift test --filter ICSParserTests/testBasicEvent
+# Specific test
+swift test --filter SyncViewModelTests/testAddFeed
 ```
 
 ### Dependencies
 
-- [Swift Argument Parser](https://github.com/apple/swift-argument-parser) (1.3.0+): Command-line interface
+- [Swift Argument Parser](https://github.com/apple/swift-argument-parser) (1.3.0+): CLI interface
 - [SQLite.swift](https://github.com/stephencelis/SQLite.swift) (0.15.0+): State persistence
-- EventKit (system framework): Calendar integration
+- EventKit (system): Calendar integration
+- UserNotifications (system): Native notifications
+- SwiftUI (system): GUI framework
 
 ## Version
 
-Current version: 1.1.2
+Current version: **2.0.0**
+
+### Changelog
+
+#### v2.0.0
+- Added native macOS menu bar GUI app
+- Multi-feed support with independent settings
+- Per-feed notification controls
+- Calendar picker using EventKit
+- Default calendar setting
+- Native UserNotifications framework
+- Calendar access detection and warning UI
+- Import/export configuration (backwards compatible with v1.x CLI configs)
+- View logs from GUI
+- Reset sync state from GUI
+- 100% feature compatibility between CLI and GUI
+- Comprehensive test suite for GUI (150+ tests)
+
+#### v1.1.2
+- Fixed EventKit date range queries
+- Improved duplicate cleanup in migrate command
+
+#### v1.1.1
+- Added migrate command for UID marker migration
+
+#### v1.1.0
+- Bulletproof deduplication system
+- Embedded UID markers in event notes
 
 ## License
 
@@ -893,7 +687,7 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 ## Contributing
 
-Contributions are welcome. Please feel free to submit a Pull Request.
+Contributions are welcome!
 
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feature/amazing-feature`)
@@ -906,3 +700,4 @@ Contributions are welcome. Please feel free to submit a Pull Request.
 - Built with [Swift Argument Parser](https://github.com/apple/swift-argument-parser)
 - SQLite handling via [SQLite.swift](https://github.com/stephencelis/SQLite.swift)
 - Calendar integration via Apple EventKit framework
+- GUI built with SwiftUI and generated via [XcodeGen](https://github.com/yonaskolb/XcodeGen)
