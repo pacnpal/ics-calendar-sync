@@ -42,8 +42,15 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      # The post-compile script in project.yml copies CLI from .build/release into the app bundle
+
       - name: Build GUI App (ARM64)
         run: |
+          # Build ARM64 CLI and copy to expected location for embedding
+          swift build -c release --arch arm64
+          mkdir -p .build/release
+          cp .build/arm64-apple-macosx/release/ics-calendar-sync .build/release/
+
           xcodebuild -project ICSCalendarSyncGUI.xcodeproj \
             -scheme "ICS Calendar Sync" \
             -configuration Release \
@@ -58,6 +65,11 @@ jobs:
 
       - name: Build GUI App (Intel)
         run: |
+          # Build Intel CLI and copy to expected location for embedding
+          swift build -c release --arch x86_64
+          mkdir -p .build/release
+          cp .build/x86_64-apple-macosx/release/ics-calendar-sync .build/release/
+
           xcodebuild -project ICSCalendarSyncGUI.xcodeproj \
             -scheme "ICS Calendar Sync" \
             -configuration Release \
@@ -72,6 +84,11 @@ jobs:
 
       - name: Build GUI App (Universal)
         run: |
+          # Build Universal CLI and copy to expected location for embedding
+          swift build -c release --arch arm64 --arch x86_64
+          mkdir -p .build/release
+          cp .build/apple/Products/Release/ics-calendar-sync .build/release/
+
           xcodebuild -project ICSCalendarSyncGUI.xcodeproj \
             -scheme "ICS Calendar Sync" \
             -configuration Release \

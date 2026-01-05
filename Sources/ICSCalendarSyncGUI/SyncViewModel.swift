@@ -567,24 +567,87 @@ final class MockFileSystem: FileSystemProtocol, @unchecked Sendable {
 struct SyncViewModelDependencies: Sendable {
     let configPath: String
     let statePath: String
+    let cliPath: String
     let cliRunner: CLIRunnerProtocol
     let fileSystem: FileSystemProtocol
     let logger: GUILoggerProtocol
+
+    /// Find CLI binary in order of preference:
+    /// 1. Embedded in app bundle (Contents/Resources/ics-calendar-sync)
+    /// 2. Alongside app bundle (for development)
+    /// 3. System install at /usr/local/bin
+    static func findCLIPath() -> String {
+        let fm = FileManager.default
+
+        // 1. Check inside app bundle Resources
+        if let bundlePath = Bundle.main.resourcePath {
+            let embeddedPath = "\(bundlePath)/ics-calendar-sync"
+            if fm.fileExists(atPath: embeddedPath) {
+                return embeddedPath
+            }
+        }
+
+        // 2. Check in app bundle's MacOS directory (alternative location)
+        if let execPath = Bundle.main.executablePath {
+            let macOSDir = (execPath as NSString).deletingLastPathComponent
+            let siblingPath = "\(macOSDir)/ics-calendar-sync"
+            if fm.fileExists(atPath: siblingPath) {
+                return siblingPath
+            }
+        }
+
+        // 3. Check alongside the app bundle (for development builds)
+        if let bundlePath = Bundle.main.bundlePath as NSString? {
+            let parentDir = bundlePath.deletingLastPathComponent
+            // Check .build/debug for SPM builds
+            let debugPath = "\(parentDir)/.build/debug/ics-calendar-sync"
+            if fm.fileExists(atPath: debugPath) {
+                return debugPath
+            }
+            // Check .build/release for SPM release builds
+            let releasePath = "\(parentDir)/.build/release/ics-calendar-sync"
+            if fm.fileExists(atPath: releasePath) {
+                return releasePath
+            }
+        }
+
+        // 4. Fallback to system install
+        return "/usr/local/bin/ics-calendar-sync"
+    }
 
     static func createDefault() -> SyncViewModelDependencies {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let configPath = "\(home)/.config/ics-calendar-sync/gui-config.json"
         let statePath = "\(home)/.local/share/ics-calendar-sync/state.db"
-        let cliPath = "/usr/local/bin/ics-calendar-sync"
+        let cliPath = findCLIPath()
         let logger = GUILogger.shared
+
+        logger.info("Using CLI at: \(cliPath)")
 
         return SyncViewModelDependencies(
             configPath: configPath,
             statePath: statePath,
+            cliPath: cliPath,
             cliRunner: RealCLIRunner(cliPath: cliPath, logger: logger),
             fileSystem: RealFileSystem(),
             logger: logger
         )
+    }
+}
+
+// MARK: - Service Status
+
+enum ServiceStatus: Equatable {
+    case notInstalled
+    case running
+    case stopped
+
+    var description: String {
+        switch self {
+        case .notInstalled: return "Not installed"
+        case .running: return "Running"
+        case .stopped: return "Stopped"
+        }
     }
 }
 
@@ -597,6 +660,7 @@ class SyncViewModel: ObservableObject {
     @Published var lastSyncTime: Date?
     @Published var eventCount: Int = 0
     @Published var isServiceRunning: Bool = false
+    @Published var isServiceInstalled: Bool = false
     @Published var lastError: String?
 
     // Multi-feed configuration
@@ -617,6 +681,17 @@ class SyncViewModel: ObservableObject {
     // Dependencies
     private let deps: SyncViewModelDependencies
     private var refreshTimer: Timer?
+
+    // Service constants (nonisolated for use in async closures)
+    private nonisolated static let serviceLabel = "com.ics-calendar-sync"
+    private nonisolated static var launchAgentPlistPath: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return "\(home)/Library/LaunchAgents/\(serviceLabel).plist"
+    }
+    private nonisolated static var logDir: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return "\(home)/Library/Logs/ics-calendar-sync"
+    }
 
     // Available sync intervals
     let syncIntervals = [5, 15, 30, 60]
@@ -676,6 +751,9 @@ class SyncViewModel: ObservableObject {
         await checkServiceStatus()
         await loadCalendars()
         await checkNotificationStatus()
+
+        // Auto-install service on first run
+        await autoInstallServiceIfNeeded()
     }
 
     // MARK: - Notification Status
@@ -936,76 +1014,282 @@ class SyncViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Service Control
+    // MARK: - Service Control (Direct Launchd Management)
 
+    /// Check service status directly via launchctl (no CLI dependency)
     func checkServiceStatus() async {
         deps.logger.debug("Checking service status")
 
-        let result = await deps.cliRunner.run(arguments: ["status", "--json"])
+        // Check if plist exists (installed)
+        isServiceInstalled = FileManager.default.fileExists(atPath: Self.launchAgentPlistPath)
 
-        if result.exitCode == 0 {
-            if let data = result.output.data(using: .utf8),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let daemonStatus = json["daemon"] as? [String: Any],
-               let running = daemonStatus["running"] as? Bool {
-                isServiceRunning = running
-                deps.logger.debug("Service running: \(running)")
-                return
+        // Check if running via launchctl
+        isServiceRunning = await checkLaunchctlRunning()
+
+        deps.logger.debug("Service installed: \(isServiceInstalled), running: \(isServiceRunning)")
+    }
+
+    /// Get detailed service status
+    func getServiceStatus() async -> ServiceStatus {
+        await checkServiceStatus()
+        if !isServiceInstalled {
+            return .notInstalled
+        }
+        return isServiceRunning ? .running : .stopped
+    }
+
+    private func checkLaunchctlRunning() async -> Bool {
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                process.arguments = ["list", Self.serviceLabel]
+
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = pipe
+
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                    continuation.resume(returning: process.terminationStatus == 0)
+                } catch {
+                    continuation.resume(returning: false)
+                }
+            }
+        }
+    }
+
+    /// Install the background service (creates LaunchAgent plist and loads it)
+    func installService() async -> Bool {
+        deps.logger.info("Installing background service")
+
+        // Check if CLI exists
+        guard FileManager.default.fileExists(atPath: deps.cliPath) else {
+            lastError = "CLI not found at \(deps.cliPath). Cannot install service."
+            deps.logger.error(lastError!)
+            return false
+        }
+
+        // Create log directory
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: Self.logDir) {
+            do {
+                try fm.createDirectory(atPath: Self.logDir, withIntermediateDirectories: true)
+            } catch {
+                lastError = "Failed to create log directory: \(error.localizedDescription)"
+                deps.logger.error(lastError!)
+                return false
             }
         }
 
-        isServiceRunning = await checkLaunchctl()
-    }
+        // Create LaunchAgents directory if needed
+        let launchAgentsDir = (Self.launchAgentPlistPath as NSString).deletingLastPathComponent
+        if !fm.fileExists(atPath: launchAgentsDir) {
+            do {
+                try fm.createDirectory(atPath: launchAgentsDir, withIntermediateDirectories: true)
+            } catch {
+                lastError = "Failed to create LaunchAgents directory: \(error.localizedDescription)"
+                deps.logger.error(lastError!)
+                return false
+            }
+        }
 
-    private func checkLaunchctl() async -> Bool {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = ["list", "com.ics-calendar-sync"]
+        // Generate plist content
+        let plistContent = generateLaunchAgentPlist()
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
+        // Write plist file
         do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
+            try plistContent.write(toFile: Self.launchAgentPlistPath, atomically: true, encoding: .utf8)
+            deps.logger.info("Created plist at \(Self.launchAgentPlistPath)")
         } catch {
-            deps.logger.error("Failed to check launchctl: \(error.localizedDescription)")
+            lastError = "Failed to write plist: \(error.localizedDescription)"
+            deps.logger.error(lastError!)
+            return false
+        }
+
+        // Load the service
+        let loadSuccess = await runLaunchctl(["load", Self.launchAgentPlistPath])
+        if loadSuccess {
+            isServiceInstalled = true
+            isServiceRunning = true
+            lastError = nil
+            deps.logger.info("Service installed and started successfully")
+            return true
+        } else {
+            lastError = "Failed to load service with launchctl"
+            deps.logger.error(lastError!)
             return false
         }
     }
 
+    /// Uninstall the background service
+    func uninstallService() async -> Bool {
+        deps.logger.info("Uninstalling background service")
+
+        guard isServiceInstalled else {
+            deps.logger.warning("Service not installed")
+            return true
+        }
+
+        // Unload the service first
+        _ = await runLaunchctl(["unload", Self.launchAgentPlistPath])
+
+        // Remove plist file
+        do {
+            try FileManager.default.removeItem(atPath: Self.launchAgentPlistPath)
+            isServiceInstalled = false
+            isServiceRunning = false
+            lastError = nil
+            deps.logger.info("Service uninstalled successfully")
+            return true
+        } catch {
+            lastError = "Failed to remove plist: \(error.localizedDescription)"
+            deps.logger.error(lastError!)
+            return false
+        }
+    }
+
+    /// Start the service (enable)
     func startService() async {
         deps.logger.info("Starting service")
-        status = .syncing
 
-        let result = await deps.cliRunner.run(arguments: ["start"])
+        // If not installed, install first
+        if !isServiceInstalled {
+            let installed = await installService()
+            if !installed {
+                status = .error(lastError ?? "Failed to install service")
+                return
+            }
+        }
 
-        if result.exitCode == 0 {
+        let success = await runLaunchctl(["load", Self.launchAgentPlistPath])
+        if success {
             isServiceRunning = true
-            status = .idle
             lastError = nil
             deps.logger.info("Service started successfully")
         } else {
             status = .error("Failed to start service")
-            lastError = result.output.isEmpty ? "Failed to start service" : result.output
-            deps.logger.error("Failed to start service: \(result.output)")
+            lastError = "Failed to start service"
+            deps.logger.error("Failed to start service")
         }
     }
 
+    /// Stop the service (disable)
     func stopService() async {
         deps.logger.info("Stopping service")
 
-        let result = await deps.cliRunner.run(arguments: ["stop"])
+        guard isServiceInstalled else {
+            deps.logger.warning("Service not installed, nothing to stop")
+            return
+        }
 
-        if result.exitCode == 0 {
+        let success = await runLaunchctl(["unload", Self.launchAgentPlistPath])
+        if success {
             isServiceRunning = false
             lastError = nil
             deps.logger.info("Service stopped successfully")
         } else {
-            lastError = result.output.isEmpty ? "Failed to stop service" : result.output
-            deps.logger.error("Failed to stop service: \(result.output)")
+            lastError = "Failed to stop service"
+            deps.logger.error("Failed to stop service")
+        }
+    }
+
+    /// Run launchctl command
+    private func runLaunchctl(_ arguments: [String]) async -> Bool {
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                process.arguments = arguments
+
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = pipe
+
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                    continuation.resume(returning: process.terminationStatus == 0)
+                } catch {
+                    continuation.resume(returning: false)
+                }
+            }
+        }
+    }
+
+    /// Generate the LaunchAgent plist content
+    private func generateLaunchAgentPlist() -> String {
+        return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key>
+            <string>\(Self.serviceLabel)</string>
+
+            <key>ProgramArguments</key>
+            <array>
+                <string>\(deps.cliPath)</string>
+                <string>daemon</string>
+                <string>--config</string>
+                <string>\(deps.configPath)</string>
+            </array>
+
+            <key>RunAtLoad</key>
+            <true/>
+
+            <key>KeepAlive</key>
+            <dict>
+                <key>SuccessfulExit</key>
+                <false/>
+            </dict>
+
+            <key>StandardOutPath</key>
+            <string>\(Self.logDir)/stdout.log</string>
+
+            <key>StandardErrorPath</key>
+            <string>\(Self.logDir)/stderr.log</string>
+
+            <key>EnvironmentVariables</key>
+            <dict>
+                <key>PATH</key>
+                <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+            </dict>
+
+            <key>ProcessType</key>
+            <string>Background</string>
+
+            <key>LowPriorityBackgroundIO</key>
+            <true/>
+
+            <key>ThrottleInterval</key>
+            <integer>60</integer>
+        </dict>
+        </plist>
+        """
+    }
+
+    // MARK: - Auto-Install Service
+
+    /// Check if service should be auto-installed on first run
+    func autoInstallServiceIfNeeded() async {
+        deps.logger.debug("Checking if service auto-install is needed")
+
+        await checkServiceStatus()
+
+        // Only auto-install if:
+        // 1. Service is not installed
+        // 2. CLI binary exists
+        // 3. We have at least one feed configured (or will install anyway for future use)
+        if !isServiceInstalled && FileManager.default.fileExists(atPath: deps.cliPath) {
+            deps.logger.info("Auto-installing service on first run")
+            let success = await installService()
+            if success {
+                deps.logger.info("Service auto-installed successfully")
+            } else {
+                deps.logger.warning("Service auto-install failed: \(lastError ?? "unknown error")")
+            }
         }
     }
 
@@ -1045,7 +1329,7 @@ class SyncViewModel: ObservableObject {
             "notifications_enabled": notificationsEnabled,
             "global_sync_interval": 15,
             "default_calendar": defaultCalendar,
-            "version": "2.0.0"
+            "version": "2.0.1"
         ]
 
         let feedsArray = feeds.map { feed -> [String: Any] in

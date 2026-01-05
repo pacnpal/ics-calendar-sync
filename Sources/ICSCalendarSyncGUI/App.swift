@@ -10,6 +10,7 @@ struct ICSCalendarSyncApp: App {
         } label: {
             Label("ICS Calendar Sync", systemImage: viewModel.menuBarIcon)
         }
+        .menuBarExtraStyle(.window)
 
         Settings {
             SettingsView(viewModel: viewModel)

@@ -49,7 +49,7 @@ struct SettingsView: View {
             "notifications_enabled": viewModel.notificationsEnabled,
             "global_sync_interval": 15,
             "default_calendar": viewModel.defaultCalendar,
-            "version": "2.0.0"
+            "version": "2.0.1"
         ]
 
         let feedsArray = viewModel.feeds.map { feed -> [String: Any] in

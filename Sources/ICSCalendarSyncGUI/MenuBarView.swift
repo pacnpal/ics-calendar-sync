@@ -64,19 +64,43 @@ struct MenuBarView: View {
             Divider()
 
             // Service Control
-            if viewModel.isServiceRunning {
+            if viewModel.isServiceInstalled {
+                // Service is installed - show enable/disable options
+                if viewModel.isServiceRunning {
+                    Label("Service: Running", systemImage: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+
+                    Button {
+                        Task { await viewModel.stopService() }
+                    } label: {
+                        Label("Disable Service", systemImage: "stop.fill")
+                    }
+                } else {
+                    Label("Service: Stopped", systemImage: "pause.circle.fill")
+                        .foregroundColor(.orange)
+
+                    Button {
+                        Task { await viewModel.startService() }
+                    } label: {
+                        Label("Enable Service", systemImage: "play.fill")
+                    }
+                }
+
                 Button {
-                    Task { await viewModel.stopService() }
+                    Task { await viewModel.uninstallService() }
                 } label: {
-                    Label("Stop Service", systemImage: "stop.fill")
+                    Label("Uninstall Service", systemImage: "trash")
                 }
             } else {
+                // Service not installed - show install option
+                Label("Service: Not Installed", systemImage: "xmark.circle")
+                    .foregroundColor(.secondary)
+
                 Button {
-                    Task { await viewModel.startService() }
+                    Task { await viewModel.installService() }
                 } label: {
-                    Label("Start Service", systemImage: "play.fill")
+                    Label("Install Service", systemImage: "arrow.down.circle")
                 }
-                .disabled(!viewModel.hasFeeds)
             }
 
             Divider()

@@ -24,6 +24,7 @@ final class SyncViewModelTests: XCTestCase {
         let deps = SyncViewModelDependencies(
             configPath: "/test/gui-config.json",
             statePath: "/test/state.db",
+            cliPath: "/test/ics-calendar-sync",
             cliRunner: mockCLIRunner,
             fileSystem: mockFileSystem,
             logger: mockLogger
@@ -401,80 +402,63 @@ final class SyncViewModelTests: XCTestCase {
 
     // MARK: - Service Control Tests
 
-    func testCheckServiceStatusRunning() async {
-        let statusJSON = """
-        {"daemon": {"running": true}}
-        """
-        await mockCLIRunner.setResponse(for: "status", result: CLIResult(output: statusJSON, exitCode: 0))
+    // Note: Service control now uses direct launchctl calls instead of CLI commands.
+    // These tests verify the state management and logging behavior.
 
+    func testCheckServiceStatusInitial() async {
+        // In test environment with no LaunchAgent installed, service should be not installed
         let vm = createViewModel()
         await vm.checkServiceStatus()
 
-        XCTAssertTrue(vm.isServiceRunning)
+        // Service should not be installed in test environment
+        XCTAssertFalse(vm.isServiceInstalled)
     }
 
-    func testCheckServiceStatusStopped() async {
-        let statusJSON = """
-        {"daemon": {"running": false}}
-        """
-        await mockCLIRunner.setResponse(for: "status", result: CLIResult(output: statusJSON, exitCode: 0))
-
+    func testGetServiceStatusNotInstalled() async {
         let vm = createViewModel()
-        await vm.checkServiceStatus()
+        let status = await vm.getServiceStatus()
 
-        XCTAssertFalse(vm.isServiceRunning)
+        XCTAssertEqual(status, .notInstalled)
     }
 
-    func testStartServiceSuccess() async {
-        await mockCLIRunner.setResponse(for: "start", result: .success)
-
+    func testStopServiceWithoutInstall() async {
+        // When service is not installed, stopService should be a no-op
         let vm = createViewModel()
-        await vm.startService()
-
-        XCTAssertTrue(vm.isServiceRunning)
-        XCTAssertEqual(vm.status, .idle)
-        XCTAssertNil(vm.lastError)
-
-        let history = await mockCLIRunner.getCallHistory()
-        XCTAssertTrue(history.contains(["start"]))
-    }
-
-    func testStartServiceFailure() async {
-        await mockCLIRunner.setResponse(for: "start", result: .failure("Permission denied"))
-
-        let vm = createViewModel()
-        await vm.startService()
-
-        XCTAssertFalse(vm.isServiceRunning)
-        XCTAssertEqual(vm.status, .error("Failed to start service"))
-        XCTAssertEqual(vm.lastError, "Permission denied")
-    }
-
-    func testStopServiceSuccess() async {
-        await mockCLIRunner.setResponse(for: "stop", result: .success)
-
-        let vm = createViewModel()
-        vm.setServiceRunning(true)
+        XCTAssertFalse(vm.isServiceInstalled)
 
         await vm.stopService()
 
+        // Should complete without error since it's not installed
         XCTAssertFalse(vm.isServiceRunning)
-        XCTAssertNil(vm.lastError)
-
-        let history = await mockCLIRunner.getCallHistory()
-        XCTAssertTrue(history.contains(["stop"]))
     }
 
-    func testStopServiceFailure() async {
-        await mockCLIRunner.setResponse(for: "stop", result: .failure("Service not running"))
-
+    func testServiceStatusProperties() async {
         let vm = createViewModel()
-        vm.setServiceRunning(true)
 
-        await vm.stopService()
+        // Initial state should have service not installed
+        XCTAssertFalse(vm.isServiceInstalled)
+        XCTAssertFalse(vm.isServiceRunning)
+    }
 
-        XCTAssertTrue(vm.isServiceRunning)
-        XCTAssertEqual(vm.lastError, "Service not running")
+    func testInstallServiceWithoutCLI() async {
+        // When CLI doesn't exist, install should fail with error
+        let vm = createViewModel()
+
+        let success = await vm.installService()
+
+        XCTAssertFalse(success)
+        XCTAssertNotNil(vm.lastError)
+        XCTAssertTrue(vm.lastError?.contains("CLI not found") ?? false)
+    }
+
+    func testAutoInstallServiceIfNeeded() async {
+        // When CLI doesn't exist, auto-install should skip silently
+        let vm = createViewModel()
+
+        await vm.autoInstallServiceIfNeeded()
+
+        // Should not set error since auto-install is best-effort
+        XCTAssertFalse(vm.isServiceInstalled)
     }
 
     // MARK: - Timer Tests

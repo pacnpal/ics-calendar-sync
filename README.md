@@ -25,10 +25,12 @@ A robust, enterprise-quality Swift tool that synchronizes events from ICS calend
 
 ### GUI App Features (New in v2.0)
 - **Menu Bar App**: Lives in your menu bar for quick access
+- **Standalone Operation**: Works independently without requiring CLI installation
+- **Auto-Service Install**: Background service installs automatically on first launch
 - **Multi-Feed Management**: Add, edit, delete, and toggle multiple ICS feeds
 - **Visual Calendar Picker**: Select target calendars from a dropdown showing all your calendars
 - **Per-Feed Settings**: Independent sync intervals, notifications, and orphan deletion settings
-- **Service Control**: Start/stop background sync service from the GUI
+- **Service Control**: Install/uninstall, enable/disable background sync service from the GUI
 - **Status Overview**: See sync status, event counts, and last sync time at a glance
 - **Calendar Access Warning**: Alerts you if calendar permissions need to be granted
 - **Import/Export Configs**: Export your configuration to JSON or import from file (backwards compatible with CLI configs)
@@ -57,14 +59,15 @@ Download the macOS App from the [Releases page](https://github.com/pacnpal/ics-c
 
 | Your Mac | Download |
 |----------|----------|
-| Apple Silicon (M1/M2/M3/M4) | `ICS-Calendar-Sync-macOS-App-arm64-v2.0.0.zip` |
-| Intel | `ICS-Calendar-Sync-macOS-App-x86_64-v2.0.0.zip` |
-| **Not sure** | `ICS-Calendar-Sync-macOS-App-universal-v2.0.0.zip` |
+| Apple Silicon (M1/M2/M3/M4) | `ICS-Calendar-Sync-macOS-App-arm64-v2.0.1.zip` |
+| Intel | `ICS-Calendar-Sync-macOS-App-x86_64-v2.0.1.zip` |
+| **Not sure** | `ICS-Calendar-Sync-macOS-App-universal-v2.0.1.zip` |
 
 1. Extract the zip file
 2. Drag **ICS Calendar Sync.app** to your Applications folder
 3. Launch the app - it will appear in your menu bar
 4. On first launch, grant calendar access when prompted
+5. The background sync service installs automatically
 
 #### Option 2: Build from Source
 
@@ -78,10 +81,13 @@ cd ics-calendar-sync
 # Install XcodeGen if needed
 brew install xcodegen
 
+# Build CLI first (will be embedded in the app)
+swift build -c release
+
 # Generate Xcode project
 xcodegen generate
 
-# Build the app
+# Build the app (CLI will be automatically embedded)
 xcodebuild -project ICSCalendarSyncGUI.xcodeproj -scheme "ICS Calendar Sync" -configuration Release build
 
 # The app will be in DerivedData. To copy to Applications:
@@ -93,6 +99,8 @@ Or use the convenience script:
 ./scripts/build-app.sh
 ```
 
+> **Note:** The GUI app is fully standalone - it includes an embedded CLI binary and will automatically install the background sync service on first launch. No separate CLI installation required.
+
 ### CLI Tool
 
 #### Pre-built Binary
@@ -101,14 +109,14 @@ Download the latest release from the [Releases page](https://github.com/pacnpal/
 
 | Your Mac | Download | How to check |
 |----------|----------|--------------|
-| Apple Silicon | `ics-calendar-sync-cli-arm64-v2.0.0.zip` | Apple menu > About This Mac shows "Chip: Apple M1/M2/M3/M4" |
-| Intel | `ics-calendar-sync-cli-x86_64-v2.0.0.zip` | Apple menu > About This Mac shows "Processor: Intel" |
-| **Not sure** | `ics-calendar-sync-cli-universal-v2.0.0.zip` | Works on all Macs |
+| Apple Silicon | `ics-calendar-sync-cli-arm64-v2.0.1.zip` | Apple menu > About This Mac shows "Chip: Apple M1/M2/M3/M4" |
+| Intel | `ics-calendar-sync-cli-x86_64-v2.0.1.zip` | Apple menu > About This Mac shows "Processor: Intel" |
+| **Not sure** | `ics-calendar-sync-cli-universal-v2.0.1.zip` | Works on all Macs |
 
 ```bash
 # Extract the zip (replace ARCH with arm64, x86_64, or universal)
 cd ~/Downloads
-unzip ics-calendar-sync-cli-ARCH-v2.0.0.zip
+unzip ics-calendar-sync-cli-ARCH-v2.0.1.zip
 
 # Remove quarantine attribute
 xattr -d com.apple.quarantine ics-calendar-sync-*
@@ -187,7 +195,9 @@ Click the calendar icon in your menu bar to see:
 - **Actions**:
   - Sync All Feeds (Cmd+R)
   - Refresh Status
-  - Start/Stop Service
+  - **Service Status**: Shows if service is installed and running
+  - Enable/Disable Service (when installed)
+  - Install/Uninstall Service
   - Settings... (Cmd+,)
   - View Logs...
   - Quit (Cmd+Q)
@@ -658,9 +668,16 @@ swift test --filter SyncViewModelTests/testAddFeed
 
 ## Version
 
-Current version: **2.0.0**
+Current version: **2.0.1**
 
 ### Changelog
+
+#### v2.0.1
+- **Standalone GUI App**: GUI app now works independently without requiring CLI installation
+- **Auto-Service Install**: Background sync service installs automatically on first app launch
+- **Embedded CLI**: CLI binary is now embedded in the GUI app bundle
+- **Enhanced Service Control**: Menu bar now shows service install status with install/uninstall options
+- **Direct Launchd Management**: Service control uses direct launchctl instead of CLI commands
 
 #### v2.0.0
 - Added native macOS menu bar GUI app

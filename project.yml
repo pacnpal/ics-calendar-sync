@@ -21,11 +21,36 @@ targets:
         type: group
     resources:
       - path: Resources/Assets.xcassets
+    postCompileScripts:
+      - name: "Embed CLI Binary"
+        script: |
+          # Copy CLI binary into app bundle Resources for independent operation
+          CLI_SOURCE="${SRCROOT}/.build/release/ics-calendar-sync"
+          CLI_DEST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/ics-calendar-sync"
+
+          if [ -f "$CLI_SOURCE" ]; then
+            mkdir -p "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources"
+            cp "$CLI_SOURCE" "$CLI_DEST"
+            chmod +x "$CLI_DEST"
+            echo "Embedded CLI binary from $CLI_SOURCE to $CLI_DEST"
+          else
+            # Try debug build
+            CLI_SOURCE="${SRCROOT}/.build/debug/ics-calendar-sync"
+            if [ -f "$CLI_SOURCE" ]; then
+              mkdir -p "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources"
+              cp "$CLI_SOURCE" "$CLI_DEST"
+              chmod +x "$CLI_DEST"
+              echo "Embedded CLI binary from $CLI_SOURCE to $CLI_DEST"
+            else
+              echo "Warning: CLI binary not found. Build CLI first with 'swift build' or 'swift build -c release'"
+            fi
+          fi
+        basedOnDependencyAnalysis: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ics-calendar-sync.gui
         PRODUCT_NAME: ICS Calendar Sync
-        MARKETING_VERSION: "2.0.0"
+        MARKETING_VERSION: "2.0.1"
         CURRENT_PROJECT_VERSION: "1"
         INFOPLIST_FILE: Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Resources/ICSCalendarSyncGUI.entitlements
