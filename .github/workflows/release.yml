@@ -44,22 +44,50 @@ jobs:
           swift build -c release --arch arm64 --arch x86_64
           cp .build/apple/Products/Release/ics-calendar-sync artifacts/ics-calendar-sync-universal
 
-      - name: Build GUI App
-        run: |
-          # Generate Xcode project
-          xcodegen generate
+      - name: Generate Xcode project
+        run: xcodegen generate
 
-          # Build the app
+      - name: Build GUI App (ARM64)
+        run: |
           xcodebuild -project ICSCalendarSyncGUI.xcodeproj \
             -scheme "ICS Calendar Sync" \
             -configuration Release \
-            -derivedDataPath build \
+            -derivedDataPath build-arm64 \
+            ARCHS=arm64 \
             build
 
-          # Copy and zip the app
-          cp -R "build/Build/Products/Release/ICS Calendar Sync.app" artifacts/
+          cp -R "build-arm64/Build/Products/Release/ICS Calendar Sync.app" artifacts/
           cd artifacts
-          zip -r "ICS.Calendar.Sync.app-${{ steps.version.outputs.VERSION }}.zip" "ICS Calendar Sync.app"
+          zip -r "ICS.Calendar.Sync-arm64-${{ steps.version.outputs.VERSION }}.zip" "ICS Calendar Sync.app"
+          rm -rf "ICS Calendar Sync.app"
+
+      - name: Build GUI App (Intel)
+        run: |
+          xcodebuild -project ICSCalendarSyncGUI.xcodeproj \
+            -scheme "ICS Calendar Sync" \
+            -configuration Release \
+            -derivedDataPath build-x86_64 \
+            ARCHS=x86_64 \
+            build
+
+          cp -R "build-x86_64/Build/Products/Release/ICS Calendar Sync.app" artifacts/
+          cd artifacts
+          zip -r "ICS.Calendar.Sync-x86_64-${{ steps.version.outputs.VERSION }}.zip" "ICS Calendar Sync.app"
+          rm -rf "ICS Calendar Sync.app"
+
+      - name: Build GUI App (Universal)
+        run: |
+          xcodebuild -project ICSCalendarSyncGUI.xcodeproj \
+            -scheme "ICS Calendar Sync" \
+            -configuration Release \
+            -derivedDataPath build-universal \
+            ARCHS="arm64 x86_64" \
+            ONLY_ACTIVE_ARCH=NO \
+            build
+
+          cp -R "build-universal/Build/Products/Release/ICS Calendar Sync.app" artifacts/
+          cd artifacts
+          zip -r "ICS.Calendar.Sync-universal-${{ steps.version.outputs.VERSION }}.zip" "ICS Calendar Sync.app"
           rm -rf "ICS Calendar Sync.app"
 
       - name: Create CLI archives
@@ -85,6 +113,8 @@ jobs:
             ics-calendar-sync-arm64-${{ steps.version.outputs.VERSION }}.zip \
             ics-calendar-sync-x86_64-${{ steps.version.outputs.VERSION }}.zip \
             ics-calendar-sync-universal-${{ steps.version.outputs.VERSION }}.zip \
-            ICS.Calendar.Sync.app-${{ steps.version.outputs.VERSION }}.zip \
+            ICS.Calendar.Sync-arm64-${{ steps.version.outputs.VERSION }}.zip \
+            ICS.Calendar.Sync-x86_64-${{ steps.version.outputs.VERSION }}.zip \
+            ICS.Calendar.Sync-universal-${{ steps.version.outputs.VERSION }}.zip \
             checksums-${{ steps.version.outputs.VERSION }}.txt \
             --clobber
