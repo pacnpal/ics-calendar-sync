@@ -1,3 +1,4 @@
+import FeedState
 import Foundation
 import SQLite
 
@@ -44,10 +45,10 @@ actor SyncStateStore {
     private var db: Connection?
     private let dbPath: String
 
-    // Table definitions
-    private let syncedEvents = Table("synced_events")
-    private let syncHistory = Table("sync_history")
-    private let syncMetadata = Table("sync_metadata")
+    private let feed: FeedState
+    private var syncedEvents: Table { feed.events }
+    private var syncHistory: Table { feed.history }
+    private var syncMetadata: Table { feed.metadata }
 
     // Column definitions for synced_events
     private let sourceUID = SQLite.Expression<String>("source_uid")
@@ -77,8 +78,9 @@ actor SyncStateStore {
 
     // MARK: - Initialization
 
-    init(path: String) {
-        self.dbPath = path.expandingTildeInPath
+    init(config: Configuration) {
+        self.feed = config.feedState
+        self.dbPath = config.state.path.expandingTildeInPath
     }
 
     /// Open database and create tables if needed
@@ -88,59 +90,30 @@ actor SyncStateStore {
         try FileManager.default.createDirectoryIfNeeded(atPath: dirPath)
 
         // Open database
-        db = try Connection(dbPath)
-
-        // Enable WAL mode for better concurrency
-        try db?.execute("PRAGMA journal_mode = WAL")
-
-        // Create tables
-        try createTables()
-
-        logger.debug("Initialized state database at \(dbPath)")
-    }
-
-    /// Create database tables
-    private func createTables() throws {
-        guard let db = db else { throw SyncError.stateCorrupted }
-
-        // Create synced_events table
-        try db.run(syncedEvents.create(ifNotExists: true) { t in
-            t.column(sourceUID, primaryKey: true)
-            t.column(calendarItemId)
-            t.column(eventIdentifier)
-            t.column(contentHash)
-            t.column(sequence, defaultValue: 0)
-            t.column(lastModified)
-            t.column(syncedAt)
-            t.column(icsData)
-        })
-
-        // Create sync_history table
-        try db.run(syncHistory.create(ifNotExists: true) { t in
-            t.column(historyId, primaryKey: .autoincrement)
-            t.column(startedAt)
-            t.column(completedAt)
-            t.column(status)
-            t.column(eventsCreated, defaultValue: 0)
-            t.column(eventsUpdated, defaultValue: 0)
-            t.column(eventsDeleted, defaultValue: 0)
-            t.column(eventsUnchanged, defaultValue: 0)
-            t.column(errorMessage)
-        })
-
-        // Create sync_metadata table
-        try db.run(syncMetadata.create(ifNotExists: true) { t in
-            t.column(metaKey, primaryKey: true)
-            t.column(metaValue)
-            t.column(metaUpdatedAt)
-        })
-
-        // Create indexes
-        try db.run(syncedEvents.createIndex(calendarItemId, ifNotExists: true))
-        try db.run(syncHistory.createIndex(startedAt, ifNotExists: true))
+        let connection = try Connection(dbPath)
+        connection.busyTimeout = 5
+        try connection.execute("PRAGMA journal_mode = WAL")
+        try FeedState.initialize(connection)
+        db = connection
     }
 
     // MARK: - Event Operations
+
+    struct LegacyIdentifiers {
+        let externalID: String
+        let eventID: String?
+    }
+
+    /// Read-only hints. A v2.1 mapping can identify a candidate for review, never its owner.
+    func legacyIdentifiers() throws -> [String: LegacyIdentifiers] {
+        guard let db else { throw SyncError.stateCorrupted }
+        guard try db.scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='synced_events'") as? Int64 == 1 else { return [:] }
+        var result = [String: LegacyIdentifiers]()
+        for row in try db.prepare(Table("synced_events").select(sourceUID, calendarItemId, eventIdentifier)) {
+            result[row[sourceUID]] = LegacyIdentifiers(externalID: row[calendarItemId], eventID: row[eventIdentifier])
+        }
+        return result
+    }
 
     /// Get all synced events
     func getAllSyncedEvents() throws -> [String: SyncedEventRecord] {
@@ -200,7 +173,8 @@ actor SyncStateStore {
         let now = formatDate(Date())
         let modifiedStr = modified.map { formatDate($0) }
 
-        try db.run(syncedEvents.upsert(
+        try db.run(FeedState.eventTable.insert(or: .replace,
+            FeedState.owner <- feed.id,
             sourceUID <- uid,
             calendarItemId <- itemId,
             eventIdentifier <- eventId,
@@ -208,8 +182,7 @@ actor SyncStateStore {
             sequence <- seq,
             lastModified <- modifiedStr,
             syncedAt <- now,
-            icsData <- data,
-            onConflictOf: sourceUID
+            icsData <- data
         ))
     }
 
@@ -263,7 +236,8 @@ actor SyncStateStore {
     func recordSyncStart() throws -> Int64 {
         guard let db = db else { throw SyncError.stateCorrupted }
 
-        return try db.run(syncHistory.insert(
+        return try db.run(FeedState.historyTable.insert(
+            FeedState.owner <- feed.id,
             startedAt <- formatDate(Date()),
             status <- SyncHistoryRecord.SyncStatus.failed.rawValue,
             eventsCreated <- 0,
@@ -348,11 +322,11 @@ actor SyncStateStore {
     func setMetadata(key: String, value: String) throws {
         guard let db = db else { throw SyncError.stateCorrupted }
 
-        try db.run(syncMetadata.upsert(
+        try db.run(FeedState.metadataTable.insert(or: .replace,
+            FeedState.owner <- feed.id,
             metaKey <- key,
             metaValue <- value,
-            metaUpdatedAt <- formatDate(Date()),
-            onConflictOf: metaKey
+            metaUpdatedAt <- formatDate(Date())
         ))
     }
 
@@ -385,10 +359,7 @@ actor SyncStateStore {
     func reset() throws {
         guard let db = db else { throw SyncError.stateCorrupted }
 
-        try db.run(syncedEvents.delete())
-        try db.run(syncHistory.delete())
-        try db.run(syncMetadata.delete())
-        try vacuum()
+        try db.transaction { try feed.reset(in: db) }
 
         logger.info("State database reset")
     }
@@ -409,14 +380,5 @@ actor SyncStateStore {
 
     private func parseDate(_ string: String) -> Date? {
         ISO8601DateFormatter().date(from: string)
-    }
-}
-
-// MARK: - SQLite Upsert Extension
-
-extension Table {
-    /// Upsert (insert or update on conflict)
-    func upsert(_ values: Setter..., onConflictOf column: SQLite.Expression<String>) -> Insert {
-        return insert(or: .replace, values)
     }
 }

@@ -5,8 +5,16 @@ final class RobustnessTests: XCTestCase {
 
     // MARK: - SyncLock Tests
 
+    private let lockDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    private var lockPath: String { lockDirectory.appendingPathComponent("sync.lock").path }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: lockDirectory)
+        super.tearDown()
+    }
+
     func testSyncLockAcquireAndRelease() throws {
-        let lock = SyncLock()
+        let lock = SyncLock(path: lockPath)
 
         // Should acquire successfully
         XCTAssertNoThrow(try lock.acquire())
@@ -20,13 +28,13 @@ final class RobustnessTests: XCTestCase {
     }
 
     func testSyncLockPreventsDoubleAcquire() throws {
-        let lock = SyncLock()
+        let lock = SyncLock(path: lockPath)
 
         // First acquire should succeed
         try lock.acquire()
 
         // Second acquire should fail with syncInProgress
-        let lock2 = SyncLock()
+        let lock2 = SyncLock(path: lockPath)
         XCTAssertThrowsError(try lock2.acquire()) { error in
             XCTAssertTrue(error is SyncError)
             if let syncError = error as? SyncError {
@@ -43,16 +51,15 @@ final class RobustnessTests: XCTestCase {
         lock.release()
     }
 
-    func testSyncLockCleanupOnRelease() throws {
-        let lock = SyncLock()
-
-        try lock.acquire()
-        lock.release()
-
-        // Lock file should be removed
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let lockPath = "\(home)/.config/ics-calendar-sync/.sync.lock"
-        XCTAssertFalse(FileManager.default.fileExists(atPath: lockPath))
+    func testOtherEngineCannotReleaseHeldLock() throws {
+        let owner = SyncLock(path: lockPath)
+        let other = SyncLock(path: lockPath)
+        try owner.acquire()
+        other.release()
+        XCTAssertThrowsError(try other.acquire())
+        owner.release()
+        try other.acquire()
+        other.release()
     }
 
     // MARK: - Configuration Format Tests

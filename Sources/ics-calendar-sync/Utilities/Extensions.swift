@@ -20,32 +20,6 @@ extension String {
             .replacingOccurrences(of: "\n", with: "\\n")
     }
 
-    /// Expand environment variables in the form ${VAR_NAME}
-    var expandingEnvironmentVariables: String {
-        var result = self
-        let pattern = "\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}"
-
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
-            return self
-        }
-
-        let matches = regex.matches(in: self, options: [], range: NSRange(self.startIndex..., in: self))
-
-        // Process matches in reverse order to preserve indices
-        for match in matches.reversed() {
-            guard let fullRange = Range(match.range, in: self),
-                  let varNameRange = Range(match.range(at: 1), in: self) else {
-                continue
-            }
-
-            let varName = String(self[varNameRange])
-            let value = ProcessInfo.processInfo.environment[varName] ?? ""
-            result.replaceSubrange(fullRange, with: value)
-        }
-
-        return result
-    }
-
     /// Expand tilde to home directory
     var expandingTildeInPath: String {
         if hasPrefix("~/") {

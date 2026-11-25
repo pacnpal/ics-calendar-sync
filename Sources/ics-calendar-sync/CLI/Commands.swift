@@ -377,7 +377,7 @@ struct ListCommand: AsyncParsableCommand {
         let config = try await configManager.load(from: global.configPath)
 
         // Get state
-        let stateStore = SyncStateStore(path: config.state.path)
+        let stateStore = SyncStateStore(config: config)
         try await stateStore.initialize()
 
         let events = try await stateStore.getAllSyncedEvents()
@@ -492,7 +492,7 @@ struct ResetCommand: AsyncParsableCommand {
 
         guard options.force else {
             logger.error("Reset requires --force flag to confirm")
-            logger.info("This will delete all sync state. Events in calendar will not be affected.")
+            logger.info("This will clear state for the configured feed.")
             throw ExitCode.failure
         }
 
@@ -501,12 +501,12 @@ struct ResetCommand: AsyncParsableCommand {
         let config = try await configManager.load(from: global.configPath)
 
         // Reset state
-        let stateStore = SyncStateStore(path: config.state.path)
+        let stateStore = SyncStateStore(config: config)
         try await stateStore.initialize()
         try await stateStore.reset()
 
         logger.success("Sync state has been reset")
-        logger.info("Next sync will treat all events as new")
+        logger.info("Next sync will recover events with this feed’s ownership marker")
     }
 }
 
@@ -515,200 +515,91 @@ struct ResetCommand: AsyncParsableCommand {
 struct MigrateCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "migrate",
-        abstract: "Add UID markers to existing calendar events for bulletproof deduplication"
+        abstract: "Review legacy events and assign a selected calendar item to this feed"
     )
 
     @OptionGroup var global: GlobalOptions
-
-    @Flag(name: .long, help: "Delete duplicate events that match ICS but don't have UID markers")
-    var cleanupDuplicates: Bool = false
+    @Option(help: "Local calendar item ID from the migration report to assign to this feed")
+    var adoptEvent: String?
+    @Option(help: "Source UID to assign with --adopt-event")
+    var uid: String?
+    @Flag(name: .long, help: "Remove confirmed non-recurring copies of tracked events owned by this feed")
+    var cleanupDuplicates = false
 
     mutating func run() async throws {
         global.configureLogger()
-        let logger = Logger.shared
+        guard (adoptEvent == nil) == (uid == nil) else {
+            throw ValidationError("--adopt-event and --uid must be supplied together.")
+        }
+        let config = try await ConfigurationManager.shared.load(from: global.configPath)
+        let lock = SyncLock()
+        try lock.acquire()
+        defer { lock.release() }
 
-        logger.info("Starting UID migration...")
-
-        // Load configuration
-        let configManager = ConfigurationManager.shared
-        let config = try await configManager.load(from: global.configPath)
-
-        // Initialize calendar manager
-        let calendarManager = CalendarManager()
-        try await calendarManager.requestAccess()
-
-        logger.info("Calendar access granted")
-
-        // Fetch and parse ICS
-        logger.info("Fetching ICS from \(config.source.url)...")
-        guard let url = URL(string: config.source.url) else {
-            throw ICSError.invalidURL(config.source.url)
+        let manager = CalendarManager()
+        try await manager.requestAccess()
+        guard await manager.hasAccess() else { throw SyncError.calendarAccessRevoked }
+        guard let calendarID = try await manager.destination(for: config, dryRun: true) else {
+            throw CalendarError.calendarNotFound(config.destination.calendarName)
+        }
+        guard let url = URL(string: config.source.url) else { throw ICSError.invalidURL(config.source.url) }
+        let data = try await ICSFetcher().fetch(from: url, config: config.getFetchConfig())
+        let parsed = try await ICSParser().parse(data)
+        let events = SyncEngine.masters(in: parsed)
+        let state = SyncStateStore(config: config)
+        try await state.initialize()
+        let records = try await state.getAllSyncedEvents()
+        let legacy = try await state.legacyIdentifiers()
+        let inventory = try await manager.inventory(in: calendarID, eventDates: events.map(\.startDate))
+        let missing = Set(records.keys).subtracting(parsed.map(\.uid))
+        let canClean = config.sync.deleteOrphans && SyncEngine.allowDeletions(
+            incoming: events.count, tracked: records.count, orphans: missing.count)
+        if cleanupDuplicates && !canClean {
+            Logger.shared.warning("Duplicate cleanup skipped by deletion safeguards")
         }
 
-        let icsFetcher = ICSFetcher()
-        let fetchConfig = config.getFetchConfig()
-        let icsContent = try await icsFetcher.fetch(from: url, config: fetchConfig)
-
-        let icsParser = ICSParser()
-        let icsEvents = try await icsParser.parse(icsContent)
-        logger.info("Parsed \(icsEvents.count) events from ICS")
-
-        // Build lookup map for ICS events by UID
-        var icsLookup: [String: ICSEvent] = [:]
-        for event in icsEvents {
-            icsLookup[event.uid] = event
+        var duplicates: [(copy: CalendarItemMatch, keeper: CalendarItemMatch)] = []
+        var selected = false
+        for event in events where uid == nil || uid == event.uid {
+            let record = records[event.uid]
+            let matches = await manager.matches(for: event.uid, feed: config.feedState.id, calendar: calendarID,
+                state: record, scanned: inventory[event.uid] ?? [], legacy: legacy[event.uid])
+            for item in matches.legacy where !item.detached {
+                let existing = try await manager.checkedEvent(item)
+                print("Review UID \(event.uid) | item \(item.itemID) | \(existing.startDate.formatted()) | \(existing.title ?? "(No Title)")")
+                if item.itemID == adoptEvent {
+                    guard record == nil, matches.keeper == nil, !matches.ambiguous else {
+                        throw ValidationError("This UID already has a tracked item or series. Review its copies manually.")
+                    }
+                    selected = true
+                    if !global.dryRun {
+                        let saved = try await manager.adopt(event, item: item, in: calendarID, mapping: config.getMappingConfig())
+                        try await state.upsertEvent(uid: event.uid, calendarItemId: saved.externalID ?? "",
+                            eventIdentifier: saved.eventID, contentHash: ContentHash.calculate(for: event),
+                            sequence: event.sequence, lastModified: event.lastModified, icsData: event.rawData)
+                    }
+                    print("\(global.dryRun ? "Would adopt" : "Adopted") item \(item.itemID)")
+                }
+            }
+            if cleanupDuplicates, canClean, let record, let keeper = matches.keeper,
+               (keeper.externalID == record.calendarItemId && !record.calendarItemId.isEmpty ||
+                keeper.eventID != nil && keeper.eventID == record.eventIdentifier) {
+                duplicates += matches.duplicates.map { ($0, keeper) }
+            }
         }
-
-        // Load sync state to get tracked events (same approach as SyncEngine)
-        let stateStore = SyncStateStore(path: config.state.path)
-        try await stateStore.initialize()
-        let syncedEvents = try await stateStore.getAllSyncedEvents()
-
-        logger.info("Found \(syncedEvents.count) tracked events in sync state")
-
-        // Process events using the same lookup method as SyncEngine
-        var migrated = 0
-        var alreadyHasUID = 0
-        var notFound = 0
-        var noICSMatch = 0
-        var errors = 0
-
-        let mappingConfig = config.getMappingConfig()
-
-        // Find target calendar for fallback searches
-        guard let calendar = await calendarManager.findCalendar(named: config.destination.calendarName) else {
-            logger.error("Calendar not found: \(config.destination.calendarName)")
-            throw ExitCode.failure
-        }
-
-        logger.info("Using calendar: \(calendar.title)")
-
-        for (uid, state) in syncedEvents {
-            // Find corresponding ICS event first
-            guard let icsEvent = icsLookup[uid] else {
-                noICSMatch += 1
-                logger.debug("No ICS event found for UID: \(uid)")
-                continue
-            }
-
-            // Look up the calendar event using same fallback chain as SyncEngine:
-            // 1. Try by stored calendarItemId
-            var ekEvent = await calendarManager.findEvent(byExternalId: state.calendarItemId)
-
-            // 2. Fallback: search by ICS UID embedded in notes
-            if ekEvent == nil {
-                ekEvent = await calendarManager.findEvent(byICSUID: uid, in: calendar)
-            }
-
-            // 3. Fallback: search by matching properties (title, date)
-            if ekEvent == nil {
-                ekEvent = await calendarManager.findEvent(matching: icsEvent, in: calendar, config: mappingConfig)
-            }
-
-            guard let event = ekEvent else {
-                notFound += 1
-                logger.debug("Event not found in calendar: \(uid)")
-                continue
-            }
-
-            // Check if already has UID marker
-            if EventMapper.containsUIDMarker(event.notes) {
-                alreadyHasUID += 1
-                continue
-            }
-
-            // Migrate: add UID marker to event
-            if global.dryRun {
-                logger.info("Would migrate: \(event.title ?? "(No Title)")")
-                migrated += 1
+        if !duplicates.isEmpty {
+            let count = duplicates.count
+            if SyncEngine.allowDeletions(incoming: events.count, tracked: records.count + count, orphans: missing.count + count) {
+                for (copy, keeper) in duplicates {
+                    if !global.dryRun { try await manager.removeDuplicate(copy, keeping: keeper) }
+                    print("\(global.dryRun ? "Would delete" : "Deleted") duplicate \(copy.itemID) of UID \(copy.marker.uid)")
+                }
             } else {
-                do {
-                    try await calendarManager.updateEvent(event, from: icsEvent, config: mappingConfig)
-                    logger.info("Migrated: \(event.title ?? "(No Title)")")
-                    migrated += 1
-                } catch {
-                    logger.error("Failed to migrate \(event.title ?? "(No Title)"): \(error)")
-                    errors += 1
-                }
+                Logger.shared.warning("Duplicate cleanup exceeds the mass-deletion threshold")
             }
         }
-
-        // Report results
-        logger.separator()
-        print("Migration Summary:")
-        print("  Already has UID: \(alreadyHasUID)")
-        print("  Migrated:        \(migrated)")
-        print("  Not in calendar: \(notFound)")
-        print("  No ICS match:    \(noICSMatch)")
-        print("  Errors:          \(errors)")
-
-        if global.dryRun {
-            logger.info("Dry run - no changes were made")
-        }
-
-        if notFound > 0 {
-            logger.warning("\(notFound) events were not found in calendar - they may have been deleted")
-        }
-
-        // Cleanup duplicates if requested
-        if cleanupDuplicates {
-            logger.info("Searching for duplicate events to clean up...")
-            var duplicatesDeleted = 0
-            var duplicateErrors = 0
-
-            for icsEvent in icsEvents {
-                // Search for events matching this ICS event by properties
-                let searchStart = icsEvent.startDate.addingTimeInterval(-86400 * 2)
-                let searchEnd = icsEvent.startDate.addingTimeInterval(86400 * 2)
-                let candidates = await calendarManager.getEvents(in: calendar, from: searchStart, to: searchEnd)
-
-                // Find events that match title/date but DON'T have UID marker (duplicates)
-                let expectedTitle = mappingConfig.summaryPrefix + (icsEvent.summary ?? "")
-                // Use large tolerance (1 hour) since ICS times may have changed since original sync
-                let timeTolerance: TimeInterval = 3600
-
-                for candidate in candidates {
-                    // Skip events that have UID markers (they're the "real" synced events)
-                    if EventMapper.containsUIDMarker(candidate.notes) {
-                        continue
-                    }
-
-                    let candidateTitle = candidate.title?.lowercased() ?? ""
-
-                    // Check if this is a duplicate (matches title and time)
-                    let titleMatch = candidateTitle == expectedTitle.lowercased() ||
-                                     candidateTitle.contains(expectedTitle.lowercased()) ||
-                                     expectedTitle.lowercased().contains(candidateTitle)
-
-                    guard titleMatch else { continue }
-                    guard candidate.isAllDay == icsEvent.isAllDay else { continue }
-
-                    let startDiff = abs(candidate.startDate.timeIntervalSince(icsEvent.startDate))
-                    let endDiff = abs(candidate.endDate.timeIntervalSince(icsEvent.endDate))
-
-                    if startDiff <= timeTolerance && endDiff <= timeTolerance {
-                        // This is a duplicate without UID marker - delete it
-                        if global.dryRun {
-                            logger.info("Would delete duplicate: \(candidate.title ?? "(No Title)")")
-                            duplicatesDeleted += 1
-                        } else {
-                            do {
-                                try await calendarManager.deleteEvent(candidate)
-                                logger.info("Deleted duplicate: \(candidate.title ?? "(No Title)")")
-                                duplicatesDeleted += 1
-                            } catch {
-                                logger.error("Failed to delete duplicate: \(error)")
-                                duplicateErrors += 1
-                            }
-                        }
-                    }
-                }
-            }
-
-            logger.separator()
-            print("Cleanup Summary:")
-            print("  Duplicates deleted: \(duplicatesDeleted)")
-            print("  Errors:             \(duplicateErrors)")
+        if adoptEvent != nil && !selected {
+            throw ValidationError("No matching legacy item in this destination for that incoming UID.")
         }
     }
 }

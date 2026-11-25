@@ -47,7 +47,7 @@ struct GlobalOptions: ParsableArguments {
 
 /// Options specific to sync command
 struct SyncOptions: ParsableArguments {
-    @Flag(name: .long, help: "Force full sync, ignoring existing state")
+    @Flag(name: .long, help: "Reapply incoming events while retaining identity and skipping deletions")
     var full: Bool = false
 }
 

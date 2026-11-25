@@ -1,3 +1,6 @@
+#if SWIFT_PACKAGE
+import FeedState
+#endif
 import Foundation
 import SwiftUI
 import SQLite
@@ -111,6 +114,7 @@ struct FeedConfiguration: Codable, Identifiable, Equatable {
     var id: UUID
     var name: String
     var icsURL: String
+    var statePath: String?
     var calendarName: String
     var syncInterval: Int
     var deleteOrphans: Bool
@@ -125,10 +129,12 @@ struct FeedConfiguration: Codable, Identifiable, Equatable {
         syncInterval: Int = 15,
         deleteOrphans: Bool = true,
         isEnabled: Bool = true,
-        notificationsEnabled: Bool = true
+        notificationsEnabled: Bool = true,
+        statePath: String? = nil
     ) {
         self.id = id
         self.name = name
+        self.statePath = statePath
         self.icsURL = icsURL
         self.calendarName = calendarName
         self.syncInterval = syncInterval
@@ -142,6 +148,7 @@ struct FeedConfiguration: Codable, Identifiable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
+        statePath = try container.decodeIfPresent(String.self, forKey: .statePath)
         icsURL = try container.decode(String.self, forKey: .icsURL)
         calendarName = try container.decode(String.self, forKey: .calendarName)
         syncInterval = try container.decode(Int.self, forKey: .syncInterval)
@@ -191,6 +198,8 @@ struct GUIConfiguration: Codable, Equatable {
 // MARK: - Legacy Configuration (for migration)
 
 struct LegacyConfiguration: Codable {
+    struct StateConfig: Codable { var path: String? }
+    var state: StateConfig?
     var source: SourceConfig?
     var destination: DestinationConfig?
     var sync: SyncConfig?
@@ -805,7 +814,7 @@ class SyncViewModel: ObservableObject {
 
         // Check if we have access
         if #available(macOS 14.0, *) {
-            hasCalendarAccess = calendarAccessStatus == .fullAccess || calendarAccessStatus == .writeOnly
+            hasCalendarAccess = calendarAccessStatus == .fullAccess
         } else {
             hasCalendarAccess = calendarAccessStatus == .authorized
         }
@@ -871,7 +880,8 @@ class SyncViewModel: ObservableObject {
                     calendarName: legacy.destination?.calendarName ?? "Subscribed Events",
                     syncInterval: legacy.daemon?.intervalMinutes ?? 15,
                     deleteOrphans: legacy.sync?.deleteOrphans ?? true,
-                    isEnabled: true
+                    isEnabled: true,
+                    statePath: legacy.state?.path
                 )
                 feeds = [feed]
                 notificationsEnabled = legacy.notifications?.enabled ?? false
@@ -897,19 +907,7 @@ class SyncViewModel: ObservableObject {
                 "default_calendar": defaultCalendar
             ]
 
-            let feedsArray = feeds.map { feed -> [String: Any] in
-                [
-                    "id": feed.id.uuidString,
-                    "name": feed.name,
-                    "icsURL": feed.icsURL,
-                    "calendarName": feed.calendarName,
-                    "syncInterval": feed.syncInterval,
-                    "deleteOrphans": feed.deleteOrphans,
-                    "isEnabled": feed.isEnabled,
-                    "notificationsEnabled": feed.notificationsEnabled
-                ]
-            }
-            configDict["feeds"] = feedsArray
+            configDict["feeds"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(feeds))
 
             let configDir = (deps.configPath as NSString).deletingLastPathComponent
             try deps.fileSystem.createDirectory(atPath: configDir)
@@ -939,13 +937,15 @@ class SyncViewModel: ObservableObject {
         let configDir = "\(home)/.config/ics-calendar-sync"
         let feedConfigPath = "\(configDir)/feed-\(feed.id.uuidString).json"
 
-        let cliConfig: [String: Any] = [
+        var cliConfig: [String: Any] = [
             "source": ["url": feed.icsURL],
             "destination": ["calendar_name": feed.calendarName],
             "sync": ["delete_orphans": feed.deleteOrphans],
             "daemon": ["interval_minutes": feed.syncInterval],
             "notifications": ["enabled": notificationsEnabled]
         ]
+
+        if let path = feed.statePath { cliConfig["state"] = ["path": path] }
 
         do {
             let jsonData = try JSONSerialization.data(withJSONObject: cliConfig, options: [.prettyPrinted])
@@ -993,42 +993,43 @@ class SyncViewModel: ObservableObject {
 
     // MARK: - Sync State
 
-    func loadSyncState() async {
-        deps.logger.debug("Loading sync state from \(deps.statePath)")
-
-        guard deps.fileSystem.fileExists(atPath: deps.statePath) else {
-            deps.logger.debug("State database not found")
-            eventCount = 0
-            lastSyncTime = nil
-            return
+    private var databases: [String: [FeedState: [UUID]]] {
+        var result = [String: [FeedState: [UUID]]]()
+        for feed in feeds {
+            let path = ((feed.statePath ?? deps.statePath).expandingEnvironmentVariables as NSString).expandingTildeInPath
+            let scope = FeedState(source: feed.icsURL.expandingEnvironmentVariables, calendar: feed.calendarName)
+            result[path, default: [:]][scope, default: []].append(feed.id)
         }
+        return result
+    }
 
-        do {
-            let db = try Connection(deps.statePath, readonly: true)
-
-            let eventsTable = Table("synced_events")
-            eventCount = try db.scalar(eventsTable.count)
-
-            let historyTable = Table("sync_history")
-            let statusCol = Expression<String>("status")
-            let completedCol = Expression<String?>("completed_at")
-
-            let query = historyTable
-                .filter(statusCol == "success")
-                .order(Expression<Int64>("id").desc)
-                .limit(1)
-
-            if let row = try db.pluck(query),
-               let completedStr = row[completedCol] {
-                lastSyncTime = ISO8601DateFormatter().date(from: completedStr)
+    @discardableResult
+    func loadSyncState() async -> [UUID: Int] {
+        var feedCounts = [UUID: Int]()
+        var count = 0
+        var latest: Date?
+        for (path, scopes) in databases where deps.fileSystem.fileExists(atPath: path) {
+            do {
+                let db = try Connection(path, readonly: true)
+                guard try db.scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='feed_events'") as? Int64 == 1 else { continue }
+                for (scope, ids) in scopes {
+                    let scopedCount = try db.scalar(scope.events.count)
+                    for id in ids { feedCounts[id] = scopedCount }
+                    count += scopedCount
+                    let status = SQLite.Expression<String>("status")
+                    let completed = SQLite.Expression<String?>("completed_at")
+                    if let row = try db.pluck(scope.history.filter(status == "success").order(completed.desc)),
+                       let value = row[completed], let date = ISO8601DateFormatter().date(from: value) {
+                        latest = max(date, latest ?? date)
+                    }
+                }
+            } catch {
+                deps.logger.error("Failed to load sync state: \(error.localizedDescription)")
             }
-
-            deps.logger.info("State loaded: \(eventCount) events")
-        } catch {
-            deps.logger.error("Failed to load sync state: \(error.localizedDescription)")
-            eventCount = 0
-            lastSyncTime = nil
         }
+        eventCount = count
+        lastSyncTime = latest
+        return feedCounts
     }
 
     // MARK: - Service Control (Direct Launchd Management)
@@ -1338,14 +1339,14 @@ class SyncViewModel: ObservableObject {
     func resetSyncState() async {
         deps.logger.info("Resetting sync state for all feeds")
 
-        // Delete the state database
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let statePath = "\(home)/.local/share/ics-calendar-sync/state.db"
-
         do {
-            if deps.fileSystem.fileExists(atPath: statePath) {
-                try FileManager.default.removeItem(atPath: statePath)
-                deps.logger.info("Sync state reset successfully")
+            for (path, scopes) in databases where deps.fileSystem.fileExists(atPath: path) {
+                let db = try Connection(path)
+                db.busyTimeout = 5
+                try FeedState.initialize(db)
+                try db.transaction {
+                    for scope in scopes.keys { try scope.reset(in: db) }
+                }
             }
             // Reset in-memory state
             eventCount = 0
@@ -1371,19 +1372,7 @@ class SyncViewModel: ObservableObject {
             "version": "2.1.0"
         ]
 
-        let feedsArray = feeds.map { feed -> [String: Any] in
-            [
-                "id": feed.id.uuidString,
-                "name": feed.name,
-                "icsURL": feed.icsURL,
-                "calendarName": feed.calendarName,
-                "syncInterval": feed.syncInterval,
-                "deleteOrphans": feed.deleteOrphans,
-                "isEnabled": feed.isEnabled,
-                "notificationsEnabled": feed.notificationsEnabled
-            ]
-        }
-        configDict["feeds"] = feedsArray
+        configDict["feeds"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(feeds))
 
         let data = try JSONSerialization.data(withJSONObject: configDict, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: url)
@@ -1436,7 +1425,8 @@ class SyncViewModel: ObservableObject {
                 syncInterval: feedDict["syncInterval"] as? Int ?? 15,
                 deleteOrphans: feedDict["deleteOrphans"] as? Bool ?? true,
                 isEnabled: feedDict["isEnabled"] as? Bool ?? true,
-                notificationsEnabled: feedDict["notificationsEnabled"] as? Bool ?? true
+                notificationsEnabled: feedDict["notificationsEnabled"] as? Bool ?? true,
+                statePath: feedDict["statePath"] as? String
             )
             importedFeeds.append(feed)
         }
@@ -1469,7 +1459,8 @@ class SyncViewModel: ObservableObject {
             syncInterval: intervalMinutes,
             deleteOrphans: deleteOrphans,
             isEnabled: true,
-            notificationsEnabled: notificationsOn
+            notificationsEnabled: notificationsOn,
+            statePath: (json["state"] as? [String: String])?["path"]
         )
 
         feeds = [feed]
@@ -1492,7 +1483,7 @@ class SyncViewModel: ObservableObject {
 
         var anyFailed = false
         var lastErrorMsg = ""
-        var successfulSyncs: [(feed: FeedConfiguration, events: Int)] = []
+        var successfulSyncs: [FeedConfiguration] = []
 
         for feed in enabledFeeds {
             deps.logger.info("Syncing feed: \(feed.displayName)")
@@ -1508,24 +1499,24 @@ class SyncViewModel: ObservableObject {
                     )
                 }
             } else {
-                successfulSyncs.append((feed: feed, events: eventCount))
+                successfulSyncs.append(feed)
             }
         }
 
+        let feedCounts = await loadSyncState()
         if anyFailed {
             status = .error(lastErrorMsg)
             lastError = lastErrorMsg
         } else {
             status = .success
             deps.logger.info("All feeds synced successfully")
-            await loadSyncState()
 
             // Send success notifications if global AND per-feed notifications enabled
-            for sync in successfulSyncs {
-                if notificationsEnabled && sync.feed.notificationsEnabled {
+            for feed in successfulSyncs {
+                if notificationsEnabled && feed.notificationsEnabled, let count = feedCounts[feed.id] {
                     await NotificationManager.shared.sendSyncSuccessNotification(
-                        feedName: sync.feed.displayName,
-                        eventCount: eventCount
+                        feedName: feed.displayName,
+                        eventCount: count
                     )
                 }
             }

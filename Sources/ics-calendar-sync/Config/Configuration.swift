@@ -1,3 +1,4 @@
+import FeedState
 import Foundation
 
 // MARK: - Configuration
@@ -262,6 +263,8 @@ actor ConfigurationManager {
             config.source.url = icsURL
         }
 
+        if let path = feed["statePath"] as? String { config.state.path = path }
+
         // Destination
         if let calendarName = feed["calendarName"] as? String {
             config.destination.calendarName = calendarName
@@ -437,6 +440,8 @@ actor ConfigurationManager {
 // MARK: - Configuration Extensions
 
 extension Configuration {
+    var feedState: FeedState { FeedState(source: source.url, calendar: destination.calendarName) }
+
     /// Get fetch configuration for ICS
     func getFetchConfig() -> ICSFetcher.FetchConfig {
         var config = ICSFetcher.FetchConfig()
@@ -451,6 +456,7 @@ extension Configuration {
         var config = EventMapper.MappingConfig()
         config.summaryPrefix = sync.summaryPrefix
         config.syncAlarms = sync.syncAlarms
+        config.feedID = feedState.id
         if let url = URL(string: source.url) {
             config.sourceURL = url
         }

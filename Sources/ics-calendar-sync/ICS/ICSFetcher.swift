@@ -1,3 +1,4 @@
+import FeedState
 import Foundation
 
 // MARK: - ICS Fetcher

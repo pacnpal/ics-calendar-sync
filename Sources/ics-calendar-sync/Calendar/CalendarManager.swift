@@ -4,7 +4,7 @@ import Foundation
 // MARK: - Calendar Manager
 
 /// Manages EventKit operations for calendar sync
-actor CalendarManager {
+actor CalendarManager: SyncCalendar {
     private let eventStore: EKEventStore
     private let logger = Logger.shared
     private var accessGranted = false
@@ -40,9 +40,7 @@ actor CalendarManager {
             accessGranted = true
             return true
         case .writeOnly:
-            // Write-only might work for our purposes
-            accessGranted = true
-            return true
+            return false
         case .denied, .restricted:
             return false
         case .notDetermined:
@@ -227,112 +225,137 @@ actor CalendarManager {
         logger.debug("Deleted event: \(title)")
     }
 
-    /// Find event by external identifier (stable across app restarts)
-    func findEvent(byExternalId id: String) -> EKEvent? {
-        eventStore.calendarItem(withIdentifier: id) as? EKEvent
-    }
-
-    /// Find event by event identifier
-    func findEvent(byEventId id: String) -> EKEvent? {
-        eventStore.event(withIdentifier: id)
-    }
-
-    /// Find event by ICS UID embedded in notes (bulletproof deduplication)
-    /// This searches ALL events in the calendar for the UID marker
-    /// We search the entire calendar because the event's date may have changed
-    func findEvent(byICSUID uid: String, in calendar: EKCalendar) -> EKEvent? {
-        // Search entire calendar - use wide but reasonable range (5 years back, 5 years forward)
-        // Note: EventKit doesn't handle extremely wide ranges (100+ years) - returns 0 events
-        let searchStart = Date().addingTimeInterval(-5 * 365 * 24 * 60 * 60)
-        let searchEnd = Date().addingTimeInterval(5 * 365 * 24 * 60 * 60)
-
-        let predicate = eventStore.predicateForEvents(
-            withStart: searchStart,
-            end: searchEnd,
-            calendars: [calendar]
-        )
-
-        let events = eventStore.events(matching: predicate)
-
-        // Find event with matching UID in notes
-        if let found = events.first(where: { EventMapper.extractUID(from: $0.notes) == uid }) {
-            logger.debug("Found event by UID marker: \(found.title ?? "(No Title)")")
-            return found
+    func destination(for config: Configuration, dryRun: Bool) throws -> String? {
+        let name = config.destination.calendarName
+        let matching = getAllCalendars().filter { $0.title == name }
+        guard matching.count <= 1 else {
+            throw SyncError.configurationError("Multiple calendars are named '\(name)'. Choose a unique destination name.")
         }
-        return nil
+        if let calendar = matching.first { return calendar.calendarIdentifier }
+        guard config.destination.createIfMissing else { throw CalendarError.calendarNotFound(name) }
+        if dryRun { return nil }
+        return try createCalendar(named: name, sourcePreference: config.getSourcePreference()).calendarIdentifier
     }
 
-    /// Find event by matching properties (title and start date) in a specific calendar
-    /// This is a fallback for legacy events that don't have the UID marker
-    /// Uses fuzzy matching: title contains expected text, times within 5 minutes
-    /// IMPORTANT: Only matches events that DON'T have a different UID marker (to avoid stealing other synced events)
-    func findEvent(matching icsEvent: ICSEvent, in calendar: EKCalendar, config: EventMapper.MappingConfig = EventMapper.MappingConfig()) -> EKEvent? {
-        // Search in a wider window to catch timezone edge cases
-        let searchStart = icsEvent.startDate.addingTimeInterval(-86400 * 2) // 2 days before
-        let searchEnd = icsEvent.startDate.addingTimeInterval(86400 * 2)    // 2 days after
-
-        let predicate = eventStore.predicateForEvents(
-            withStart: searchStart,
-            end: searchEnd,
-            calendars: [calendar]
-        )
-
-        let events = eventStore.events(matching: predicate)
-        let expectedTitle = config.summaryPrefix + (icsEvent.summary ?? "(No Title)")
-        let timeTolerance: TimeInterval = 300 // 5 minutes
-
-        // First pass: try exact UID match in notes
-        if let exactMatch = events.first(where: { EventMapper.extractUID(from: $0.notes) == icsEvent.uid }) {
-            logger.debug("Found event by UID in property search: \(exactMatch.title ?? "(No Title)")")
-            return exactMatch
+    func save(_ source: ICSEvent, to item: CalendarItemMatch?, in calendarID: String,
+              mapping: EventMapper.MappingConfig) throws -> CalendarItemMatch {
+        guard let feed = mapping.feedID,
+              item == nil || item?.marker == .owned(feed: feed, uid: source.uid) else {
+            throw CalendarError.eventNotFound(source.uid)
         }
+        return try write(source, to: item, in: calendarID, mapping: mapping)
+    }
 
-        // Second pass: fuzzy property matching for events WITHOUT a different UID marker
-        let fuzzyMatch = events.first { event in
-            // Check if this event has a UID marker
-            let existingUID = EventMapper.extractUID(from: event.notes)
+    /// Called only for the UID and local item ID explicitly selected in the migration command.
+    func adopt(_ source: ICSEvent, item: CalendarItemMatch, in calendarID: String,
+               mapping: EventMapper.MappingConfig) throws -> CalendarItemMatch {
+        guard item.marker == .legacy(uid: source.uid) || item.marker == .unmarked(uid: source.uid) else {
+            throw CalendarError.eventNotFound(source.uid)
+        }
+        return try write(source, to: item, in: calendarID, mapping: mapping)
+    }
 
-            // If event has a DIFFERENT UID marker, it belongs to another ICS event - don't touch it!
-            if existingUID != nil && existingUID != icsEvent.uid {
-                return false
+    private func write(_ source: ICSEvent, to item: CalendarItemMatch?, in calendarID: String,
+                       mapping: EventMapper.MappingConfig) throws -> CalendarItemMatch {
+        guard let feed = mapping.feedID else { throw CalendarError.eventNotFound(source.uid) }
+        let event: EKEvent
+        if let item {
+            guard item.calendarID == calendarID else { throw CalendarError.eventNotFound(item.itemID) }
+            event = try checkedEvent(item)
+            try updateEvent(event, from: source, config: mapping)
+        } else {
+            guard let calendar = findCalendar(withIdentifier: calendarID) else { throw CalendarError.calendarNotFound(calendarID) }
+            event = try createEvent(from: source, in: calendar, config: mapping)
+        }
+        guard let saved = match(event),
+              saved.calendarID == calendarID, saved.marker == .owned(feed: feed, uid: source.uid) else {
+            throw CalendarError.eventNotFound(source.uid)
+        }
+        return saved
+    }
+
+    func remove(_ item: CalendarItemMatch) throws {
+        guard case .owned = item.marker else { throw CalendarError.eventNotFound(item.itemID) }
+        try deleteEvent(checkedEvent(item))
+    }
+
+    private func match(_ event: EKEvent, fallback: EventMarker? = nil) -> CalendarItemMatch? {
+        guard let marker = EventMarker(notes: event.notes) ?? fallback, let calendar = event.calendar else { return nil }
+        return CalendarItemMatch(calendarID: calendar.calendarIdentifier, itemID: event.calendarItemIdentifier,
+                                 externalID: event.calendarItemExternalIdentifier, eventID: event.eventIdentifier,
+                                 marker: marker, recurring: event.hasRecurrenceRules, detached: event.isDetached)
+    }
+
+    /// Scan once per sync. Supplement the normal horizon for explicitly requested distant events.
+    func inventory(in calendarID: String, eventDates: [Date]) throws -> [String: [CalendarItemMatch]] {
+        guard let calendar = findCalendar(withIdentifier: calendarID) else { throw CalendarError.calendarNotFound(calendarID) }
+        let now = Date()
+        let horizon = DateInterval(start: now.addingTimeInterval(-5 * 365 * 86400),
+                                   end: now.addingTimeInterval(5 * 365 * 86400))
+        var events = getEvents(in: calendar, from: horizon.start, to: horizon.end)
+        for date in Set(eventDates) where !horizon.contains(date) {
+            events += getEvents(in: calendar, from: date.addingTimeInterval(-86400), to: date.addingTimeInterval(86400))
+        }
+        return Dictionary(grouping: events.compactMap { match($0) }, by: { $0.marker.uid })
+    }
+
+    func matches(for uid: String, feed: String, calendar: String, state: SyncedEventRecord?,
+                 scanned: [CalendarItemMatch], legacy: SyncStateStore.LegacyIdentifiers? = nil) -> EventMatches {
+        func byIdentifiers(_ externalID: String?, _ eventID: String?, fallback: EventMarker? = nil) -> [CalendarItemMatch] {
+            var events = [EKEvent]()
+            if let id = externalID, !id.isEmpty {
+                events = eventStore.calendarItems(withExternalIdentifier: id).compactMap { $0 as? EKEvent }
             }
-
-            // Event has NO UID marker or has OUR UID - safe to match by properties
-            // Use fuzzy matching for legacy events
-
-            // Title: check if either contains the other (case-insensitive)
-            let eventTitle = event.title?.lowercased() ?? ""
-            let expected = expectedTitle.lowercased()
-            let titleMatch = eventTitle == expected ||
-                             eventTitle.contains(expected) ||
-                             expected.contains(eventTitle)
-
-            guard titleMatch else { return false }
-
-            // isAllDay must match exactly
-            guard event.isAllDay == icsEvent.isAllDay else { return false }
-
-            // Times: within tolerance (handles slight timezone/rounding differences)
-            let startDiff = abs(event.startDate.timeIntervalSince(icsEvent.startDate))
-            let endDiff = abs(event.endDate.timeIntervalSince(icsEvent.endDate))
-
-            return startDiff <= timeTolerance && endDiff <= timeTolerance
+            if let id = eventID, !id.isEmpty, let event = eventStore.event(withIdentifier: id) {
+                events.append(event)
+            }
+            return events.compactMap { match($0, fallback: fallback) }
         }
-
-        if let found = fuzzyMatch {
-            logger.debug("Found event by fuzzy match: \(found.title ?? "(No Title)")")
+        var candidates = scanned + byIdentifiers(state?.calendarItemId, state?.eventIdentifier)
+        if let legacy {
+            candidates += byIdentifiers(legacy.externalID, legacy.eventID, fallback: .unmarked(uid: uid))
         }
-        return fuzzyMatch
+        return EventMatches(candidates: candidates, calendarID: calendar, feed: feed, uid: uid,
+                            externalID: state?.calendarItemId, eventID: state?.eventIdentifier)
     }
 
-    /// Get all events in a calendar within date range
+    /// Re-read the first occurrence and verify the target immediately before each mutation.
+    func checkedEvent(_ item: CalendarItemMatch) throws -> EKEvent {
+        guard let event = eventStore.calendarItem(withIdentifier: item.itemID) as? EKEvent,
+              event.calendar?.calendarIdentifier == item.calendarID, !event.isDetached,
+              markerMatches(event, item: item) else {
+            throw CalendarError.eventNotFound(item.itemID)
+        }
+        return event
+    }
+
+    private func markerMatches(_ event: EKEvent, item: CalendarItemMatch) -> Bool {
+        if case .unmarked = item.marker { return !(event.notes ?? "").contains("[ICS-SYNC-") }
+        return EventMarker(notes: event.notes) == item.marker
+    }
+
+    func removeDuplicate(_ item: CalendarItemMatch, keeping keeper: CalendarItemMatch) throws {
+        let canonical = try checkedEvent(keeper)
+        let duplicate = try checkedEvent(item)
+        guard case .owned = keeper.marker, canonical.calendarItemIdentifier != duplicate.calendarItemIdentifier,
+              item.calendarID == keeper.calendarID, item.marker == keeper.marker,
+              !canonical.hasRecurrenceRules, !duplicate.hasRecurrenceRules else {
+            throw SyncError.configurationError("Duplicate changed during sync. Retaining both items.")
+        }
+        try deleteEvent(duplicate)
+    }
+
     func getEvents(in calendar: EKCalendar, from startDate: Date, to endDate: Date) -> [EKEvent] {
-        let predicate = eventStore.predicateForEvents(
-            withStart: startDate,
-            end: endDate,
-            calendars: [calendar]
-        )
-        return eventStore.events(matching: predicate)
+        struct Occurrence: Hashable {
+            let itemID: String
+            let date: Date
+        }
+        return CalendarQuery.events(from: startDate, to: endDate, key: { (event: EKEvent) in
+            Occurrence(itemID: event.calendarItemIdentifier, date: event.occurrenceDate ?? event.startDate)
+        }) { chunk in
+            let predicate = eventStore.predicateForEvents(withStart: chunk.start, end: chunk.end, calendars: [calendar])
+            return eventStore.events(matching: predicate)
+        }
     }
 
     /// Get event count in calendar

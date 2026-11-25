@@ -20,7 +20,7 @@ A robust, enterprise-quality Swift tool that synchronizes events from ICS calend
 - **Zero Authentication Hassle**: Uses native macOS calendar permissions with no app-specific passwords or OAuth required
 - **Automatic iCloud Sync**: Events sync to all your Apple devices via iCloud
 - **Smart Delta Sync**: Only creates, updates, or deletes events that have changed
-- **Bulletproof Deduplication**: Multi-layer event matching ensures no duplicates, even if iCloud changes event identifiers
+- **Feed ownership**: Each feed tracks its own calendar items, including when several feeds use the same calendar and UID
 - **Full ICS Support**: Handles recurring events, timezones, alarms, and all standard iCalendar properties
 
 ### GUI App Features (New in v2.0)
@@ -286,7 +286,7 @@ The GUI app and CLI tool are **100% feature compatible** and share the same core
 
 **Config Migration:** The GUI can import configurations from both v2.0 GUI format and v1.x CLI format. When importing a CLI config, it automatically converts the single-feed format to a GUI feed entry.
 
-**Shared State:** Both apps use the same SQLite state database at `~/.local/share/ics-calendar-sync/state.db`, so sync history is shared.
+The GUI and CLI share the configured SQLite file (default `~/.local/share/ics-calendar-sync/state.db`). Events, metadata, history and resets are scoped to the source URL and destination calendar name. Explicit `state.path` settings continue to work, including when several feeds point to the same file.
 
 ## CLI Usage
 
@@ -302,7 +302,7 @@ The GUI app and CLI tool are **100% feature compatible** and share the same core
 | `list` | List events currently tracked |
 | `calendars` | List available calendars |
 | `reset` | Reset sync state (requires `--force`) |
-| `migrate` | Add UID markers to existing calendar events |
+| `migrate` | Review legacy calendar items and assign a selected item to a feed |
 | `install` | Install as launchd background service |
 | `uninstall` | Remove launchd background service |
 
@@ -535,14 +535,26 @@ ics-calendar-sync uninstall
 6. **Apply**: Execute creates, updates, and deletes via EventKit
 7. **Persist**: Store new state to SQLite database
 
-### Bulletproof Event Matching
+### Matching events on a shared calendar
 
-To prevent duplicates even when iCloud changes EventKit identifiers:
+The sync stores a digest of the expanded source URL and calendar name alongside each UID. It also writes that identity to the event notes. Updates and deletes require a matching feed, UID and destination calendar, including when EventKit returns multiple items for a stored external identifier. Changing the URL or destination name starts a new feed identity.
 
-1. **Calendar Item External ID**: Primary stable identifier
-2. **Event Identifier**: Secondary EventKit identifier
-3. **Embedded UID Marker**: `[ICS-SYNC-UID:xxx]` in notes field
-4. **Fuzzy Property Match**: Title and time matching for legacy events
+The calendar scan covers five years on either side of today in three-year queries, with additional lookups around incoming dates outside that range. A date change can be recovered via the stored identifiers or the marker. When a tracked event cannot be located, sync reports an error and retains its state for retry.
+
+With orphan deletion enabled, sync can remove confirmed non-recurring copies after choosing and recording the item to keep. An empty feed, a suspicious mass deletion or a full sync suppresses cleanup. A recurring series counts as one calendar item for matching. Conflicting series and detached copies require review. A detached ICS override cannot replace the series master.
+
+### Upgrading from v2.1.0
+
+Stop older daemons and use the same updated CLI and GUI before resuming sync. The new tables are created alongside the original tables in the configured database. The original event rows and history stay available for inspection. Reports and resets use the new scoped tables.
+
+1. Preview each feed with `ics-calendar-sync sync --config feed.json --dry-run`. A current UID with only legacy matches is held for review, so running the preview or repeating the sync does not add another copy.
+2. Run `ics-calendar-sync migrate --config feed.json --dry-run` to see the UID, local item ID, date and title of legacy candidates for this source. Compare them with the source and the destination calendar. A legacy row in a custom database can also locate an older event without a UID marker.
+3. Assign one verified item with `ics-calendar-sync migrate --config feed.json --uid 'UID' --adopt-event 'ITEM-ID'`. Add `--dry-run` to preview the assignment. Adoption applies the current feed data to the selected item. Sync can then follow it when its date changes. Repeat only for items whose ownership you can confirm.
+4. Review leftover UID-only copies, unmarked events and UIDs that have disappeared from every feed manually. If the same UID occurs in two sources, assign each verified legacy item under the appropriate config. Once any remaining ambiguous copies have been reviewed, a feed with no prior item can create its own copy.
+
+The old shared database alone cannot identify a feed owner. The migration report only lists candidates for incoming UIDs that it can locate. Back up the calendar and database before manual cleanup. The existing `migrate --cleanup-duplicates` flag now requires a tracked, feed-owned keeper and skips legacy and recurring copies.
+
+Thanks to fboundp for diagnosing the interacting state, identifier and query-window defects and proposing a correction in [issue #2](https://github.com/pacnpal/ics-calendar-sync/issues/2).
 
 ### State Tracking
 

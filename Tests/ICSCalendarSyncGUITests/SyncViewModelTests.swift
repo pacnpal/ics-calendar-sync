@@ -1,4 +1,6 @@
 import XCTest
+import SQLite
+import FeedState
 @testable import ICSCalendarSyncGUI
 
 @MainActor
@@ -46,6 +48,33 @@ final class SyncViewModelTests: XCTestCase {
         XCTAssertFalse(vm.notificationsEnabled)
         XCTAssertFalse(vm.hasFeeds)
         XCTAssertEqual(vm.enabledFeeds.count, 0)
+    }
+
+    func testStatusAndResetUseConfiguredScopesInCustomDatabase() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("shared.db").path
+        let db = try Connection(path)
+        try FeedState.initialize(db)
+        let vm = createViewModel()
+        // File existence is injected. SQLite itself reads the temporary database.
+        try mockFileSystem.writeData(Data(), toPath: path)
+        let feed = FeedConfiguration(icsURL: "https://example.test/a", calendarName: "Shared", statePath: path)
+        vm.feeds = [feed, feed]
+        let configured = FeedState(source: feed.icsURL, calendar: feed.calendarName)
+        let other = FeedState(source: "https://example.test/b", calendar: feed.calendarName)
+        for scope in [configured, other] {
+            try db.run("INSERT INTO feed_events(feed_id,source_uid,calendar_item_id,content_hash,synced_at,ics_data) VALUES (?, 'same', 'id', 'hash', '', '')", scope.id)
+            try db.run("INSERT INTO feed_history(feed_id,started_at,completed_at,status) VALUES (?, '', '2026-01-01T00:00:00Z', 'success')", scope.id)
+        }
+        await vm.loadSyncState()
+        XCTAssertEqual(vm.eventCount, 1)
+        XCTAssertNotNil(vm.lastSyncTime)
+        await vm.resetSyncState()
+        XCTAssertEqual(try db.scalar(configured.events.count), 0)
+        XCTAssertEqual(try db.scalar(other.events.count), 1)
+        XCTAssertEqual(try db.scalar(other.history.count), 1)
     }
 
     func testSyncIntervalsAvailable() {

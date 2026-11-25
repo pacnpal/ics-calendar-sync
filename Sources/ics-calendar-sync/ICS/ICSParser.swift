@@ -204,6 +204,7 @@ actor ICSParser {
             lastModified: parseDateTime(properties["LAST-MODIFIED"]?.value, params: nil),
             dateStamp: parseDateTime(properties["DTSTAMP"]?.value, params: nil),
             recurrenceRule: properties["RRULE"]?.value,
+            isRecurrenceOverride: properties["RECURRENCE-ID"] != nil,
             exceptionDates: exceptionDates,
             recurrenceDates: recurrenceDates,
             alarms: alarms,
