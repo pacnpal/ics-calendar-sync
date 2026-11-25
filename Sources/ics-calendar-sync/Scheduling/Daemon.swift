@@ -1,3 +1,4 @@
+import FeedState
 import Foundation
 
 // MARK: - Daemon
@@ -189,7 +190,8 @@ enum DaemonRunner {
 
             let feedName = feed["name"] as? String ?? "Unnamed"
             var config = Configuration()
-            config.source.url = icsURL
+            config.source.url = icsURL.expandingEnvironmentVariables
+            if let path = feed["statePath"] as? String { config.state.path = path.expandingEnvironmentVariables }
             config.destination.calendarName = feed["calendarName"] as? String ?? "Subscribed Events"
             config.sync.deleteOrphans = feed["deleteOrphans"] as? Bool ?? true
             config.daemon.intervalMinutes = feed["syncInterval"] as? Int ?? globalInterval

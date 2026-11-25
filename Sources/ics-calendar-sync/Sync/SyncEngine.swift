@@ -1,5 +1,5 @@
+import Darwin
 import Foundation
-import EventKit
 
 // MARK: - Sync Result
 
@@ -35,56 +35,66 @@ struct SyncResult: Sendable {
 /// File-based lock to prevent concurrent syncs
 final class SyncLock {
     private let lockPath: String
-    private let logger = Logger.shared
-    private static let staleThreshold: TimeInterval = 300 // 5 minutes
+    private var descriptor: Int32 = -1
 
-    init() {
+    init(path: String? = nil) {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        self.lockPath = "\(home)/.config/ics-calendar-sync/.sync.lock"
+        self.lockPath = path ?? "\(home)/.config/ics-calendar-sync/.sync.lock"
     }
 
     func acquire() throws {
-        let fm = FileManager.default
-
-        // Check for existing lock
-        if fm.fileExists(atPath: lockPath) {
-            // Check if lock is stale (older than threshold)
-            if let attrs = try? fm.attributesOfItem(atPath: lockPath),
-               let modDate = attrs[.modificationDate] as? Date,
-               Date().timeIntervalSince(modDate) > Self.staleThreshold {
-                logger.warning("Removing stale sync lock (>\(Int(Self.staleThreshold))s old)")
-                try? fm.removeItem(atPath: lockPath)
-            } else {
-                throw SyncError.syncInProgress
-            }
+        guard descriptor == -1 else { throw SyncError.syncInProgress }
+        try FileManager.default.createDirectoryIfNeeded(atPath: (lockPath as NSString).deletingLastPathComponent)
+        let fd = open(lockPath, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            let reason = errno
+            close(fd)
+            if reason == EWOULDBLOCK { throw SyncError.syncInProgress }
+            throw POSIXError(POSIXErrorCode(rawValue: reason) ?? .EIO)
         }
-
-        // Create lock file with current PID
-        let lockContent = "\(ProcessInfo.processInfo.processIdentifier)"
-        try lockContent.write(toFile: lockPath, atomically: true, encoding: .utf8)
+        descriptor = fd
     }
 
     func release() {
-        try? FileManager.default.removeItem(atPath: lockPath)
+        if descriptor >= 0 {
+            close(descriptor)
+            descriptor = -1
+        }
+        // Keep the inode so waiters always lock the same file. The kernel unlocks on exit.
     }
+
 }
 
 // MARK: - Sync Engine
 
+protocol SyncCalendar: Actor {
+    func requestAccess() async throws
+    func hasAccess() async -> Bool
+    func destination(for config: Configuration, dryRun: Bool) throws -> String?
+    func inventory(in calendarID: String, eventDates: [Date]) throws -> [String: [CalendarItemMatch]]
+    func matches(for uid: String, feed: String, calendar: String, state: SyncedEventRecord?,
+                 scanned: [CalendarItemMatch], legacy: SyncStateStore.LegacyIdentifiers?) -> EventMatches
+    func save(_ source: ICSEvent, to item: CalendarItemMatch?, in calendarID: String,
+              mapping: EventMapper.MappingConfig) throws -> CalendarItemMatch
+    func remove(_ item: CalendarItemMatch) throws
+    func removeDuplicate(_ item: CalendarItemMatch, keeping keeper: CalendarItemMatch) throws
+}
+
 /// Orchestrates the delta sync process between ICS source and calendar
 actor SyncEngine {
     private let config: Configuration
-    private let calendarManager: CalendarManager
+    private let calendarManager: any SyncCalendar
     private let stateStore: SyncStateStore
     private let icsParser: ICSParser
     private let icsFetcher: ICSFetcher
     private let logger = Logger.shared
     private let syncLock = SyncLock()
 
-    init(config: Configuration) throws {
+    init(config: Configuration, calendarManager: any SyncCalendar = CalendarManager()) throws {
         self.config = config
-        self.calendarManager = CalendarManager()
-        self.stateStore = SyncStateStore(path: config.state.path)
+        self.calendarManager = calendarManager
+        self.stateStore = SyncStateStore(config: config)
         self.icsParser = ICSParser()
         self.icsFetcher = ICSFetcher()
     }
@@ -104,7 +114,6 @@ actor SyncEngine {
     func shutdown() async {
         logger.debug("Shutting down sync engine")
         await stateStore.close()
-        syncLock.release()
     }
 
     // MARK: - Main Sync
@@ -123,7 +132,7 @@ actor SyncEngine {
         }
 
         // Record sync start
-        let syncId = try await stateStore.recordSyncStart()
+        let syncId = dryRun ? nil : try await stateStore.recordSyncStart()
 
         do {
             // Step 1: Fetch and parse ICS
@@ -138,133 +147,21 @@ actor SyncEngine {
             let icsEvents = try await icsParser.parse(icsContent)
             logger.info("Parsed \(icsEvents.count) events from ICS")
 
-            // Step 2: Filter events by date window if configured
-            let windowFilteredEvents = filterEventsByWindow(icsEvents)
-            if windowFilteredEvents.count != icsEvents.count {
-                logger.info("Filtered to \(windowFilteredEvents.count) events within date window")
-            }
-
-            // Step 2b: Deduplicate events with same UID (keep last occurrence - highest sequence wins)
-            // This prevents duplicates if ICS feed contains same event multiple times
-            var uniqueEvents: [String: ICSEvent] = [:]
-            for event in windowFilteredEvents {
-                if let existing = uniqueEvents[event.uid] {
-                    // Keep the one with higher sequence number, or the later one if equal
-                    if event.sequence >= existing.sequence {
-                        uniqueEvents[event.uid] = event
-                    }
-                } else {
-                    uniqueEvents[event.uid] = event
-                }
-            }
-            let filteredEvents = Array(uniqueEvents.values)
-            if filteredEvents.count != windowFilteredEvents.count {
-                logger.info("Deduplicated to \(filteredEvents.count) unique events")
-            }
-
-            // Step 3: Get current sync state
-            let currentState: [String: SyncedEventRecord]
-            if fullSync {
-                currentState = [:]
-                logger.info("Full sync requested - ignoring existing state")
-            } else {
-                currentState = try await stateStore.getAllSyncedEvents()
-                logger.debug("Found \(currentState.count) events in sync state")
-            }
-
-            let currentUIDs = Set(currentState.keys)
-            let incomingUIDs = Set(filteredEvents.map { $0.uid })
-
-            // Step 4: Find or create target calendar
-            let calendar = try await getOrCreateCalendar()
-            logger.info("Using calendar: \(calendar.title)")
-
-            // Step 5: Process events
-            let mappingConfig = config.getMappingConfig()
-
-            // Process incoming events (create or update)
-            for icsEvent in filteredEvents {
-                do {
-                    if let existingState = currentState[icsEvent.uid] {
-                        // Event exists - check if changed
-                        let processResult = try await processExistingEvent(
-                            icsEvent: icsEvent,
-                            existingState: existingState,
-                            calendar: calendar,
-                            mappingConfig: mappingConfig,
-                            dryRun: dryRun
-                        )
-
-                        switch processResult {
-                        case .updated:
-                            result.updated += 1
-                        case .unchanged:
-                            result.unchanged += 1
-                        case .recreated:
-                            result.updated += 1
-                        }
-                    } else {
-                        // New event - create
-                        try await processNewEvent(
-                            icsEvent: icsEvent,
-                            calendar: calendar,
-                            mappingConfig: mappingConfig,
-                            dryRun: dryRun
-                        )
-                        result.created += 1
-                    }
-                } catch {
-                    logger.error("Failed to process event \(icsEvent.uid): \(error)")
-                    result.errors.append(SyncResult.SyncEventError(
-                        uid: icsEvent.uid,
-                        operation: currentState[icsEvent.uid] != nil ? "update" : "create",
-                        message: error.localizedDescription
-                    ))
-                }
-            }
-
-            // Step 6: Handle deletions (orphans) with safety checks
-            if config.sync.deleteOrphans {
-                let orphanUIDs = currentUIDs.subtracting(incomingUIDs)
-
-                // SAFETY: Protect against empty/failed ICS feeds deleting all events
-                if filteredEvents.isEmpty && !currentState.isEmpty {
-                    logger.warning("ICS feed returned 0 events but \(currentState.count) events exist - skipping deletion to prevent data loss")
-                } else if orphanUIDs.count > 0 && orphanUIDs.count == currentState.count && currentState.count > 5 {
-                    // All existing events would be deleted - likely a feed error
-                    logger.warning("All \(currentState.count) events would be deleted - skipping deletion as this likely indicates a feed error")
-                } else if currentState.count > 10 && orphanUIDs.count > Int(Double(currentState.count) * 0.9) {
-                    // More than 90% of events would be deleted - suspicious
-                    logger.warning("Would delete \(orphanUIDs.count) of \(currentState.count) events (>\(90)%) - skipping deletion as this may indicate a feed error")
-                } else {
-                    // Safe to proceed with deletions
-                    for uid in orphanUIDs {
-                        do {
-                            try await processDeletedEvent(uid: uid, currentState: currentState, dryRun: dryRun)
-                            result.deleted += 1
-                        } catch {
-                            logger.error("Failed to delete orphan \(uid): \(error)")
-                            result.errors.append(SyncResult.SyncEventError(
-                                uid: uid,
-                                operation: "delete",
-                                message: error.localizedDescription
-                            ))
-                        }
-                    }
-                }
-            }
+            result = try await reconcile(icsEvents, dryRun: dryRun, fullSync: fullSync)
 
             // Step 7: Record sync completion
             let status: SyncHistoryRecord.SyncStatus = result.errors.isEmpty ? .success : .partial
-            try await stateStore.recordSyncComplete(
-                id: syncId,
-                status: status,
-                created: result.created,
-                updated: result.updated,
-                deleted: result.deleted,
-                unchanged: result.unchanged,
-                error: result.errors.first?.message
-            )
+            if let syncId {
+                try await stateStore.recordSyncComplete(
+                    id: syncId,
+                    status: status,
+                    created: result.created,
+                    updated: result.updated,
+                    deleted: result.deleted,
+                    unchanged: result.unchanged,
+                    error: result.errors.first?.message
+                )
+            }
 
             logger.info("Sync complete: \(result.created) created, \(result.updated) updated, \(result.deleted) deleted, \(result.unchanged) unchanged")
 
@@ -276,229 +173,166 @@ actor SyncEngine {
 
         } catch {
             // Record sync failure
-            try? await stateStore.recordSyncComplete(
-                id: syncId,
-                status: .failed,
-                created: result.created,
-                updated: result.updated,
-                deleted: result.deleted,
-                unchanged: result.unchanged,
-                error: error.localizedDescription
-            )
+            if let syncId {
+                try? await stateStore.recordSyncComplete(
+                    id: syncId,
+                    status: .failed,
+                    created: result.created,
+                    updated: result.updated,
+                    deleted: result.deleted,
+                    unchanged: result.unchanged,
+                    error: error.localizedDescription
+                )
+            }
             throw error
         }
     }
 
     // MARK: - Event Processing
 
-    private enum ProcessResult {
-        case updated
-        case unchanged
-        case recreated
+    func reconcile(_ icsEvents: [ICSEvent], dryRun: Bool = false, fullSync: Bool = false) async throws -> SyncResult {
+        var result = SyncResult()
+        // Step 2: Filter events by date window if configured
+        let windowFilteredEvents = filterEventsByWindow(icsEvents)
+        if windowFilteredEvents.count != icsEvents.count {
+            logger.info("Filtered to \(windowFilteredEvents.count) events within date window")
+        }
+
+        let filteredEvents = Self.masters(in: windowFilteredEvents)
+
+        // Step 3: Get current sync state
+        let currentState = try await stateStore.getAllSyncedEvents()
+        let incomingUIDs = Set(filteredEvents.map(\.uid))
+        // An override or an out-of-window series master is still present in the source.
+        let seriesUIDs = icsEvents.filter { $0.isRecurrenceOverride || $0.recurrenceRule != nil }.map(\.uid)
+        let orphans = Set(currentState.keys).subtracting(incomingUIDs).subtracting(seriesUIDs)
+        let allowDeletes = config.sync.deleteOrphans && !fullSync && Self.allowDeletions(
+            incoming: incomingUIDs.count, tracked: currentState.count, orphans: orphans.count)
+        if config.sync.deleteOrphans && !allowDeletes && !orphans.isEmpty {
+            logger.warning("Retaining orphans due to full sync or empty/mass-deletion protection")
+        }
+
+        guard let calendar = try await calendarManager.destination(for: config, dryRun: dryRun) else {
+            result.created = filteredEvents.count
+            return result
+        }
+        let inventory = try await calendarManager.inventory(in: calendar, eventDates: filteredEvents.map(\.startDate))
+        let mapping = config.getMappingConfig()
+        let feed = config.feedState.id
+        let legacy = try await stateStore.legacyIdentifiers()
+
+        // Plan physical deletions before removing anything so duplicate cleanup shares the mass-deletion guard.
+        var removals: [(keeper: CalendarItemMatch, copies: [CalendarItemMatch], orphan: Bool)] = []
+        for event in filteredEvents {
+            do {
+                let record = currentState[event.uid]
+                let matches = await calendarManager.matches(for: event.uid, feed: feed, calendar: calendar,
+                    state: record, scanned: inventory[event.uid] ?? [], legacy: legacy[event.uid])
+                let keeper = try await apply(event, matches: matches, record: record, calendar: calendar,
+                                             mapping: mapping, fullSync: fullSync, dryRun: dryRun, result: &result)
+                if allowDeletes, let keeper, !matches.duplicates.isEmpty {
+                    removals.append((keeper, matches.duplicates, false))
+                }
+            } catch {
+                logger.error("Failed to sync \(event.uid): \(error.localizedDescription)")
+                result.errors.append(.init(uid: event.uid, operation: "sync", message: error.localizedDescription))
+            }
+        }
+
+        guard allowDeletes && result.errors.isEmpty else { return result }
+        for uid in orphans {
+            let matches = await calendarManager.matches(for: uid, feed: feed, calendar: calendar,
+                state: currentState[uid], scanned: inventory[uid] ?? [], legacy: nil)
+            if let keeper = matches.keeper {
+                removals.append((keeper, matches.duplicates, true))
+            } else {
+                let message = "Retaining state for unresolved orphan \(uid)"
+                logger.warning(message)
+                result.errors.append(.init(uid: uid, operation: "delete", message: message))
+            }
+        }
+
+        let copies = removals.reduce(0) { $0 + $1.copies.count }
+        guard Self.allowDeletions(incoming: incomingUIDs.count, tracked: Set(currentState.keys).union(incomingUIDs).count + copies,
+                                  orphans: orphans.count + copies) else {
+            logger.warning("Retaining calendar items because the combined deletion count exceeds the safety threshold")
+            return result
+        }
+        for removal in removals {
+            let uid = removal.keeper.marker.uid
+            do {
+                for copy in removal.copies {
+                    if !dryRun { try await calendarManager.removeDuplicate(copy, keeping: removal.keeper) }
+                    result.deleted += 1
+                }
+                if removal.orphan {
+                    if !dryRun {
+                        try await calendarManager.remove(removal.keeper)
+                        try await stateStore.deleteEvent(uid: uid)
+                    }
+                    result.deleted += 1
+                }
+            } catch {
+                logger.warning("Failed to remove calendar item for \(uid): \(error.localizedDescription)")
+                result.errors.append(.init(uid: uid, operation: "delete", message: error.localizedDescription))
+            }
+        }
+
+        return result
     }
 
-    private func processExistingEvent(
-        icsEvent: ICSEvent,
-        existingState: SyncedEventRecord,
-        calendar: EKCalendar,
-        mappingConfig: EventMapper.MappingConfig,
-        dryRun: Bool
-    ) async throws -> ProcessResult {
-        let newHash = ContentHash.calculate(for: icsEvent)
-
-        // Check if content changed
-        let contentChanged = newHash != existingState.contentHash
-        let sequenceChanged = icsEvent.sequence > existingState.sequence
-
-        // Find existing event in calendar first (we need it to check for UID marker)
-        // Try external ID first (most stable), then fall back to event identifier
-        var ekEvent: EKEvent? = nil
-
-        if !existingState.calendarItemId.isEmpty {
-            ekEvent = await calendarManager.findEvent(byExternalId: existingState.calendarItemId)
+    static func masters(in events: [ICSEvent]) -> [ICSEvent] {
+        var byUID = [String: ICSEvent]()
+        for event in events where !event.isRecurrenceOverride {
+            if let previous = byUID[event.uid], previous.sequence > event.sequence { continue }
+            byUID[event.uid] = event
         }
+        return Array(byUID.values)
+    }
 
-        // Fallback to event identifier if external ID didn't work
-        if ekEvent == nil, let eventId = existingState.eventIdentifier, !eventId.isEmpty {
-            ekEvent = await calendarManager.findEvent(byEventId: eventId)
+    static func allowDeletions(incoming: Int, tracked: Int, orphans: Int) -> Bool {
+        guard incoming > 0 else { return false }
+        if tracked > 5 && orphans == tracked { return false }
+        if tracked > 10 && orphans > Int(Double(tracked) * 0.9) { return false }
+        return true
+    }
+
+    private func apply(_ event: ICSEvent, matches: EventMatches, record: SyncedEventRecord?,
+                       calendar: String, mapping: EventMapper.MappingConfig, fullSync: Bool,
+                       dryRun: Bool, result: inout SyncResult) async throws -> CalendarItemMatch? {
+        guard !matches.ambiguous else {
+            throw SyncError.configurationError("Ambiguous calendar items for \(event.uid). Review in Calendar.")
         }
-
-        // Bulletproof fallback: search by ICS UID embedded in event notes
-        // This searches the ENTIRE calendar - most reliable as UID is stored in event itself
-        if ekEvent == nil {
-            logger.debug("Searching for event by embedded UID: \(icsEvent.uid)")
-            ekEvent = await calendarManager.findEvent(byICSUID: icsEvent.uid, in: calendar)
-        }
-
-        // Last resort: search by matching event properties (title, dates)
-        // This handles legacy events that don't have the UID marker
-        if ekEvent == nil {
-            logger.debug("Searching for event by properties: \(icsEvent.displayTitle)")
-            ekEvent = await calendarManager.findEvent(matching: icsEvent, in: calendar, config: mappingConfig)
-        }
-
-        // If found by any fallback method, update the stored identifiers for future lookups
-        if let foundEvent = ekEvent {
-            if let externalId = foundEvent.calendarItemExternalIdentifier,
-               !externalId.isEmpty,
-               externalId != existingState.calendarItemId {
-                try? await stateStore.updateCalendarItemId(
-                    uid: icsEvent.uid,
-                    calendarItemId: externalId,
-                    eventIdentifier: foundEvent.eventIdentifier
-                )
+        let hash = ContentHash.calculate(for: event)
+        if let keeper = matches.keeper {
+            if !fullSync, let record, hash == record.contentHash, event.sequence <= record.sequence {
+                let external = keeper.externalID ?? ""
+                if !dryRun && (record.calendarItemId != external || record.eventIdentifier != keeper.eventID) {
+                    try await stateStore.updateCalendarItemId(uid: event.uid, calendarItemId: external,
+                                                             eventIdentifier: keeper.eventID)
+                }
+                result.unchanged += 1
+                return keeper
             }
-        }
-
-        // Check if event needs UID marker migration
-        let needsUIDMarker = ekEvent != nil && !EventMapper.containsUIDMarker(ekEvent?.notes)
-
-        // If content unchanged AND event already has UID marker, skip update
-        // Note: If ekEvent is nil but content unchanged, we still skip to avoid creating duplicates
-        // The event might exist but our lookup failed to find it
-        if !contentChanged && !sequenceChanged && !needsUIDMarker {
-            if ekEvent == nil {
-                logger.debug("Event not found but content unchanged, skipping to avoid duplicate: \(icsEvent.uid)")
-            }
-            return .unchanged
-        }
-
-        // Log what we're doing
-        if needsUIDMarker && !contentChanged && !sequenceChanged {
-            logger.info("Migrating (adding UID marker): \(icsEvent.displayTitle)")
         } else {
-            logger.info("Updating: \(icsEvent.displayTitle)")
-        }
-
-        if dryRun {
-            return .updated
-        }
-
-        if let ekEvent = ekEvent {
-            // Update existing event (this also adds UID marker via EventMapper.apply)
-            try await calendarManager.updateEvent(ekEvent, from: icsEvent, config: mappingConfig)
-
-            try await stateStore.updateEvent(
-                uid: icsEvent.uid,
-                contentHash: newHash,
-                sequence: icsEvent.sequence
-            )
-
-            return .updated
-        } else {
-            // Event was deleted from calendar - recreate
-            logger.debug("Event not found in calendar, recreating: \(icsEvent.uid)")
-
-            let newEvent = try await calendarManager.createEvent(from: icsEvent, in: calendar, config: mappingConfig)
-
-            try await stateStore.upsertEvent(
-                uid: icsEvent.uid,
-                calendarItemId: newEvent.calendarItemExternalIdentifier ?? "",
-                eventIdentifier: newEvent.eventIdentifier,
-                contentHash: newHash,
-                sequence: icsEvent.sequence,
-                lastModified: icsEvent.lastModified,
-                icsData: icsEvent.rawData
-            )
-
-            return .recreated
-        }
-    }
-
-    private func processNewEvent(
-        icsEvent: ICSEvent,
-        calendar: EKCalendar,
-        mappingConfig: EventMapper.MappingConfig,
-        dryRun: Bool
-    ) async throws {
-        // Bulletproof check: search ENTIRE calendar by ICS UID embedded in notes
-        var existingEvent = await calendarManager.findEvent(byICSUID: icsEvent.uid, in: calendar)
-
-        // Fallback: check by matching properties (for legacy events without UID marker)
-        if existingEvent == nil {
-            existingEvent = await calendarManager.findEvent(matching: icsEvent, in: calendar, config: mappingConfig)
-        }
-
-        // If event already exists, update instead of creating duplicate
-        if let existingEvent = existingEvent {
-            logger.info("Found existing event, updating instead of creating: \(icsEvent.displayTitle)")
-
-            if !dryRun {
-                try await calendarManager.updateEvent(existingEvent, from: icsEvent, config: mappingConfig)
-                let contentHash = ContentHash.calculate(for: icsEvent)
-
-                try await stateStore.upsertEvent(
-                    uid: icsEvent.uid,
-                    calendarItemId: existingEvent.calendarItemExternalIdentifier ?? "",
-                    eventIdentifier: existingEvent.eventIdentifier,
-                    contentHash: contentHash,
-                    sequence: icsEvent.sequence,
-                    lastModified: icsEvent.lastModified,
-                    icsData: icsEvent.rawData
-                )
+            if !matches.legacy.isEmpty {
+                throw SyncError.configurationError("Legacy UID \(event.uid) needs ownership review. Run migrate --dry-run.")
             }
-            return
+            guard record == nil else {
+                throw CalendarError.eventNotFound(event.uid)
+            }
         }
 
-        logger.info("Creating: \(icsEvent.displayTitle)")
-
-        if dryRun {
-            return
+        var keeper = matches.keeper
+        if !dryRun {
+            let saved = try await calendarManager.save(event, to: keeper, in: calendar, mapping: mapping)
+            try await stateStore.upsertEvent(uid: event.uid, calendarItemId: saved.externalID ?? "",
+                eventIdentifier: saved.eventID, contentHash: hash, sequence: event.sequence,
+                lastModified: event.lastModified, icsData: event.rawData)
+            keeper = saved
         }
-
-        let newEvent = try await calendarManager.createEvent(from: icsEvent, in: calendar, config: mappingConfig)
-        let contentHash = ContentHash.calculate(for: icsEvent)
-
-        try await stateStore.upsertEvent(
-            uid: icsEvent.uid,
-            calendarItemId: newEvent.calendarItemExternalIdentifier ?? "",
-            eventIdentifier: newEvent.eventIdentifier,
-            contentHash: contentHash,
-            sequence: icsEvent.sequence,
-            lastModified: icsEvent.lastModified,
-            icsData: icsEvent.rawData
-        )
-    }
-
-    private func processDeletedEvent(
-        uid: String,
-        currentState: [String: SyncedEventRecord],
-        dryRun: Bool
-    ) async throws {
-        guard let state = currentState[uid] else { return }
-
-        logger.info("Deleting orphan: \(uid)")
-
-        if dryRun {
-            return
-        }
-
-        // Try to find and delete the event
-        if let event = await calendarManager.findEvent(byExternalId: state.calendarItemId) {
-            try await calendarManager.deleteEvent(event)
-        }
-
-        try await stateStore.deleteEvent(uid: uid)
-    }
-
-    // MARK: - Calendar Management
-
-    private func getOrCreateCalendar() async throws -> EKCalendar {
-        let calendarName = config.destination.calendarName
-
-        if let existing = await calendarManager.findCalendar(named: calendarName) {
-            return existing
-        }
-
-        guard config.destination.createIfMissing else {
-            throw CalendarError.calendarNotFound(calendarName)
-        }
-
-        logger.info("Creating calendar: \(calendarName)")
-        return try await calendarManager.createCalendar(
-            named: calendarName,
-            sourcePreference: config.getSourcePreference()
-        )
+        if matches.keeper == nil { result.created += 1 } else { result.updated += 1 }
+        return keeper
     }
 
     // MARK: - Date Window Filtering

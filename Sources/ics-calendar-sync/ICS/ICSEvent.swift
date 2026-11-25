@@ -40,6 +40,9 @@ struct ICSEvent: Sendable, Equatable {
     /// Raw RRULE string for recurring events
     var recurrenceRule: String?
 
+    /// Detached overrides share the master UID and must never replace the whole series.
+    var isRecurrenceOverride: Bool = false
+
     /// Exception dates for recurring events (EXDATE)
     var exceptionDates: [Date]
 

@@ -11,9 +11,11 @@ let package = Package(
         .package(url: "https://github.com/stephencelis/SQLite.swift.git", from: "0.15.0"),
     ],
     targets: [
+        .target(name: "FeedState", dependencies: [.product(name: "SQLite", package: "SQLite.swift")]),
         .executableTarget(
             name: "ics-calendar-sync",
             dependencies: [
+                "FeedState",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "SQLite", package: "SQLite.swift"),
             ]
@@ -21,18 +23,20 @@ let package = Package(
         .executableTarget(
             name: "ICSCalendarSyncGUI",
             dependencies: [
+                "FeedState",
                 .product(name: "SQLite", package: "SQLite.swift"),
             ]
         ),
         .testTarget(
             name: "ics-calendar-syncTests",
-            dependencies: ["ics-calendar-sync"],
+            dependencies: ["ics-calendar-sync", .product(name: "SQLite", package: "SQLite.swift")],
             resources: [.copy("Fixtures")]
         ),
         .testTarget(
             name: "ICSCalendarSyncGUITests",
             dependencies: [
                 "ICSCalendarSyncGUI",
+                "FeedState",
                 .product(name: "SQLite", package: "SQLite.swift"),
             ]
         ),
