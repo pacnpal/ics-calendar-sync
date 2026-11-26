@@ -437,6 +437,18 @@ The CLI uses `~/.config/ics-calendar-sync/config.json`:
 | `window_days_future` | integer | `365` | Sync events this many days in the future |
 | `sync_alarms` | boolean | `true` | Sync event alarms/reminders |
 
+With `sync_alarms` enabled, a fixed UTC `VALARM` keeps its absolute date. For
+`RELATED=END`, the sync adds the event's elapsed duration to the trigger offset.
+For example, five minutes before the end of a one-hour event becomes 55 minutes
+after its start. All-day events use their exclusive end date.
+
+EventKit stores one start-relative offset on a recurring series. If an
+occurrence has a different elapsed duration (for example, an all-day occurrence
+spanning a daylight-saving change), its reminder can differ from the requested
+end-relative time. Day- and week-based triggers have the same limitation when a
+later occurrence crosses a clock change. Reading an end-relative alarm back
+yields the converted start offset.
+
 #### daemon
 
 | Field | Type | Default | Description |

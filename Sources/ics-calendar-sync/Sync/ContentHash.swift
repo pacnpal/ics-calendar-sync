@@ -40,11 +40,17 @@ enum ContentHash {
         addToHash(&hasher, event.transparency?.rawValue)
         addToHash(&hasher, event.priority.map { String($0) })
 
-        // Alarms
-        for alarm in event.alarms.sorted(by: { $0.trigger < $1.trigger }) {
-            addToHash(&hasher, alarm.action.rawValue)
-            addToHash(&hasher, String(alarm.trigger))
-            addToHash(&hasher, alarm.description)
+        // The original hash sorts start-relative alarms by offset, retaining feed order for ties.
+        let alarmFields: [[String]]
+        if event.alarms.allSatisfy({ $0.absoluteDate == nil && $0.triggerRelation == .start }) {
+            alarmFields = event.alarms.sorted { $0.trigger < $1.trigger }.map(fieldsForAlarm)
+        } else {
+            alarmFields = event.alarms.map(fieldsForAlarm).sorted { $0.lexicographicallyPrecedes($1) }
+        }
+        for fields in alarmFields {
+            for field in fields {
+                addToHash(&hasher, field)
+            }
         }
 
         // Categories
@@ -82,6 +88,18 @@ enum ContentHash {
     }
 
     // MARK: - Private Helpers
+
+    private static func fieldsForAlarm(_ alarm: ICSAlarm) -> [String] {
+        let timing: String
+        if let date = alarm.absoluteDate {
+            timing = "absolute:" + formatDate(date)
+        } else if alarm.triggerRelation == .end {
+            timing = "end:" + String(alarm.trigger)
+        } else {
+            timing = String(alarm.trigger)
+        }
+        return [alarm.action.rawValue, timing, alarm.description ?? ""]
+    }
 
     private static func addToHash(_ hasher: inout SHA256, _ value: String?) {
         if let value = value {

@@ -123,32 +123,37 @@ actor ICSParser {
             throw ICSError.missingUID
         }
 
-        guard let startDate = parseDateTime(
-            properties["DTSTART"]?.value,
-            params: properties["DTSTART"]?.params
-        ) else {
+        guard let start = properties["DTSTART"],
+              let startDate = parseDateTime(start.value, params: start.params) else {
             throw ICSError.invalidStartDate
         }
 
         // Determine if all-day event
-        let isAllDay = properties["DTSTART"]?.params["VALUE"] == "DATE"
+        let isAllDay = start.params["VALUE"]?.uppercased() == "DATE"
+
+        let startZone = resolvedTimeZone(for: start.value, params: start.params)
+        var endZone = startZone
 
         // Calculate end date
         let endDate: Date
-        if let dtend = parseDateTime(properties["DTEND"]?.value, params: properties["DTEND"]?.params) {
+        if let end = properties["DTEND"], let dtend = parseDateTime(end.value, params: end.params) {
             endDate = dtend
+            endZone = resolvedTimeZone(for: end.value, params: end.params)
         } else if let duration = properties["DURATION"]?.value {
-            endDate = addDuration(duration, to: startDate)
+            endDate = addDuration(duration, to: startDate, timeZone: startZone)
         } else if isAllDay {
-            // All-day events default to 1 day
-            endDate = Calendar.current.date(byAdding: .day, value: 1, to: startDate) ?? startDate
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = startZone
+            endDate = calendar.date(byAdding: .day, value: 1, to: startDate) ?? startDate
         } else {
             // Timed events default to same as start
             endDate = startDate
         }
 
         // Parse alarms
-        let alarms = alarmLines.compactMap { parseAlarm(from: $0) }
+        let alarms = alarmLines.compactMap {
+            parseAlarm(from: $0, start: (startDate, startZone), end: (endDate, endZone))
+        }
 
         // Parse exception dates
         let exceptionDates = parseMultipleDates(properties["EXDATE"])
@@ -166,9 +171,6 @@ actor ICSParser {
         let categories = properties["CATEGORIES"]?.value
             .components(separatedBy: ",")
             .map { $0.trimmed.icsUnescaped } ?? []
-
-        // Determine timezone
-        let timeZone = extractTimeZone(from: properties["DTSTART"]?.params)
 
         // Parse optional values
         var eventURL: URL? = nil
@@ -214,7 +216,7 @@ actor ICSParser {
             categories: categories,
             priority: eventPriority,
             rawData: rawLines.joined(separator: "\r\n"),
-            timeZone: timeZone
+            timeZone: extractTimeZone(from: start.params)
         )
     }
 
@@ -238,20 +240,21 @@ actor ICSParser {
         let value = String(line[line.index(after: colonIndex)...])
 
         // Parse property name and parameters
-        let components = keyPart.components(separatedBy: ";")
+        var inQuotes = false
+        let components = keyPart.split { character in
+            if character == "\"" { inQuotes.toggle() }
+            return character == ";" && !inQuotes
+        }
         guard let propertyName = components.first?.uppercased() else {
             return nil
         }
 
         var params: [String: String] = [:]
         for param in components.dropFirst() {
-            let paramParts = param.components(separatedBy: "=")
-            if paramParts.count >= 2 {
-                let paramName = paramParts[0].uppercased()
-                let paramValue = paramParts.dropFirst().joined(separator: "=")
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                params[paramName] = paramValue
-            }
+            guard let equals = param.firstIndex(of: "=") else { continue }
+            let name = param[..<equals].uppercased()
+            let value = param[param.index(after: equals)...]
+            params[name] = String(value).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
         }
 
         return (propertyName, PropertyValue(value: value, params: params))
@@ -278,16 +281,8 @@ actor ICSParser {
     private func parseDateTime(_ value: String?, params: [String: String]?) -> Date? {
         guard let value = value else { return nil }
 
-        var dateValue = value
-        var timeZone: TimeZone? = nil
-
-        // Check for UTC indicator
-        if dateValue.hasSuffix("Z") {
-            dateValue = String(dateValue.dropLast())
-            timeZone = TimeZone(identifier: "UTC")
-        } else if let tzid = params?["TZID"] {
-            timeZone = TimeZone(identifier: tzid) ?? parseOlsonTimezone(tzid)
-        }
+        let dateValue = value.hasSuffix("Z") ? String(value.dropLast()) : value
+        let timeZone = resolvedTimeZone(for: value, params: params)
 
         // Try different formats
         let formats = [
@@ -300,7 +295,7 @@ actor ICSParser {
             let formatter = DateFormatter()
             formatter.dateFormat = format
             formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = timeZone ?? .current
+            formatter.timeZone = timeZone
 
             if let date = formatter.date(from: dateValue) {
                 return date
@@ -308,6 +303,10 @@ actor ICSParser {
         }
 
         return nil
+    }
+
+    private func resolvedTimeZone(for value: String, params: [String: String]?) -> TimeZone {
+        value.hasSuffix("Z") ? .gmt : extractTimeZone(from: params) ?? .current
     }
 
     /// Parse timezone identifier, handling non-standard formats
@@ -363,13 +362,16 @@ actor ICSParser {
     // MARK: - Duration Parsing
 
     /// Add ICS duration to date
-    private func addDuration(_ duration: String, to date: Date) -> Date {
+    private func addDuration(_ duration: String, to date: Date, timeZone: TimeZone) -> Date {
         // Parse ISO 8601 duration format: P[n]Y[n]M[n]DT[n]H[n]M[n]S
         // Examples: PT1H (1 hour), P1D (1 day), PT30M (30 minutes)
 
         var result = date
         var durationStr = duration.uppercased()
 
+        var calendar = Calendar.current
+        calendar.timeZone = timeZone
+        if durationStr.hasPrefix("+") { durationStr.removeFirst() }
         guard durationStr.hasPrefix("P") else { return date }
         durationStr = String(durationStr.dropFirst())
 
@@ -405,7 +407,7 @@ actor ICSParser {
                 continue
             }
 
-            if let newDate = Calendar.current.date(byAdding: component, value: value, to: result) {
+            if let newDate = calendar.date(byAdding: component, value: value, to: result) {
                 result = newDate
             }
 
@@ -417,100 +419,86 @@ actor ICSParser {
 
     // MARK: - Alarm Parsing
 
-    /// Parse alarm from lines
-    private func parseAlarm(from lines: [String]) -> ICSAlarm? {
-        var properties: [String: String] = [:]
+    private let absoluteAlarmFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .gmt
+        formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        return formatter
+    }()
 
+    private typealias AlarmAnchor = (date: Date, timeZone: TimeZone)
+
+    private func parseAlarm(from lines: [String], start: AlarmAnchor, end: AlarmAnchor) -> ICSAlarm? {
+        var properties: [String: PropertyValue] = [:]
         for line in lines {
-            if let colonIndex = line.firstIndex(of: ":") {
-                let key = String(line[..<colonIndex]).components(separatedBy: ";").first?.uppercased() ?? ""
-                let value = String(line[line.index(after: colonIndex)...])
-                properties[key] = value
+            if let (name, property) = parseProperty(line) {
+                properties[name] = property
             }
         }
 
-        guard let actionStr = properties["ACTION"],
-              let action = ICSAlarm.AlarmAction(icsValue: actionStr),
-              let triggerStr = properties["TRIGGER"] else {
+        guard let actionValue = properties["ACTION"]?.value,
+              let action = ICSAlarm.AlarmAction(icsValue: actionValue),
+              let trigger = properties["TRIGGER"] else { return nil }
+
+        let description = properties["DESCRIPTION"]?.value.icsUnescaped
+        let value = trigger.value.uppercased()
+        switch trigger.params["VALUE"]?.uppercased() ?? "DURATION" {
+        case "DATE-TIME":
+            // RFC 5545 requires a complete UTC timestamp for an absolute trigger.
+            guard let date = absoluteAlarmFormatter.date(from: value),
+                  absoluteAlarmFormatter.string(from: date) == value else { return nil }
+            return ICSAlarm(action: action, trigger: 0, triggerRelation: .start,
+                            description: description, absoluteDate: date)
+        case "DURATION":
+            let relation: ICSAlarm.TriggerRelation
+            switch trigger.params["RELATED"]?.uppercased() ?? "START" {
+            case "START": relation = .start
+            case "END": relation = .end
+            default: return nil
+            }
+            let anchor = relation == .end ? end : start
+            guard let offset = parseDurationToSeconds(value, from: anchor) else { return nil }
+            return ICSAlarm(action: action, trigger: offset, triggerRelation: relation, description: description)
+        default:
             return nil
         }
-
-        let (trigger, relation) = parseTrigger(triggerStr)
-
-        return ICSAlarm(
-            action: action,
-            trigger: trigger,
-            triggerRelation: relation,
-            description: properties["DESCRIPTION"]?.icsUnescaped
-        )
     }
 
-    /// Parse trigger duration
-    private func parseTrigger(_ trigger: String) -> (TimeInterval, ICSAlarm.TriggerRelation) {
-        var value = trigger.uppercased()
-        var relation: ICSAlarm.TriggerRelation = .start
-        var isNegative = false
+    /// Parse a signed iCalendar duration, keeping malformed input distinct from PT0S.
+    private func parseDurationToSeconds(_ value: String, from anchor: AlarmAnchor) -> TimeInterval? {
+        let pattern = #/
+            ([+-]?) P
+            (?:
+                ([0-9]+) W
+                |
+                (?: ([0-9]+) D )?
+                (?: T (?: ([0-9]+) H )? (?: ([0-9]+) M )? (?: ([0-9]+) S )? )?
+            )
+            /#
+        guard !value.hasSuffix("P"), !value.hasSuffix("T"),
+              let match = value.wholeMatch(of: pattern) else { return nil }
 
-        // Check for RELATED parameter
-        if value.contains("RELATED=END") {
-            relation = .end
+        let (_, sign, weeks, days, hours, minutes, seconds) = match.output
+        // A calendar day can span 23 or 25 hours. Apply nominal units before clock units.
+        var total: TimeInterval = 0
+        if let digits = weeks ?? days {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = anchor.timeZone
+            guard let count = Int(digits),
+                  let date = calendar.date(byAdding: weeks == nil ? .day : .weekOfYear,
+                                           value: sign == "-" ? -count : count, to: anchor.date) else { return nil }
+            total = abs(date.timeIntervalSince(anchor.date))
         }
-
-        // Extract the duration part
-        if let colonIndex = value.lastIndex(of: ":") {
-            value = String(value[value.index(after: colonIndex)...])
+        let components: [(Substring?, TimeInterval)] = [(hours, 3600), (minutes, 60), (seconds, 1)]
+        for (digits, scale) in components {
+            if let digits {
+                guard let number = TimeInterval(digits) else { return nil }
+                total += number * scale
+            }
         }
-
-        if value.hasPrefix("-") {
-            isNegative = true
-            value = String(value.dropFirst())
-        }
-
-        // Parse as duration
-        let seconds = parseDurationToSeconds(value)
-        return (isNegative ? -seconds : seconds, relation)
-    }
-
-    /// Parse duration string to seconds
-    private func parseDurationToSeconds(_ duration: String) -> TimeInterval {
-        var seconds: TimeInterval = 0
-        var durationStr = duration
-
-        guard durationStr.hasPrefix("P") else { return 0 }
-        durationStr = String(durationStr.dropFirst())
-
-        var isTimePart = false
-        var currentNumber = ""
-
-        for char in durationStr {
-            if char == "T" {
-                isTimePart = true
-                continue
-            }
-
-            if char.isNumber {
-                currentNumber.append(char)
-                continue
-            }
-
-            guard let value = Double(currentNumber) else {
-                currentNumber = ""
-                continue
-            }
-
-            switch char {
-            case "W": seconds += value * 7 * 24 * 3600
-            case "D": seconds += value * 24 * 3600
-            case "H": seconds += value * 3600
-            case "M": seconds += isTimePart ? value * 60 : value * 30 * 24 * 3600 // Approximate month
-            case "S": seconds += value
-            default: break
-            }
-
-            currentNumber = ""
-        }
-
-        return seconds
+        guard total.isFinite else { return nil }
+        return sign == "-" ? -total : total
     }
 
     // MARK: - Attendee/Organizer Parsing

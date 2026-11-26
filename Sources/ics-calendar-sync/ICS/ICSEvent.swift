@@ -106,7 +106,7 @@ struct ICSAlarm: Sendable, Equatable {
     /// Action type (DISPLAY, AUDIO, EMAIL)
     let action: AlarmAction
 
-    /// Trigger time relative to event (negative = before)
+    /// Offset in seconds for a relative trigger. Absolute alarms use zero here.
     let trigger: TimeInterval
 
     /// Whether trigger is relative to start or end
@@ -114,6 +114,9 @@ struct ICSAlarm: Sendable, Equatable {
 
     /// Optional alarm description
     var description: String?
+
+    /// Fixed UTC instant for a DATE-TIME trigger. Relative fields apply only when nil.
+    var absoluteDate: Date? = nil
 
     enum AlarmAction: String, Sendable {
         case display = "DISPLAY"
