@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import os.log
 
@@ -62,6 +63,51 @@ enum LogFormat: Sendable {
 
 // MARK: - Logger
 
+/// Route a record once to each distinct destination. A launchd stream can refer
+/// to either log (including 2>&1) and may have been opened without O_APPEND.
+private struct LogOutput {
+    let files: [FileHandle]
+    let console: UnsafeMutablePointer<FILE>?
+
+    init(file: FileHandle?, otherFile: FileHandle?, stream: UnsafeMutablePointer<FILE>) {
+        let streamFD = fileno(stream)
+        let logFiles = [file, otherFile].compactMap { $0 }
+        let redirected = logFiles.first { Self.sameFile($0.fileDescriptor, streamFD) }
+        var files = [file].compactMap { $0 }
+        if let redirected {
+            if redirected !== file { files.append(redirected) }
+            Self.protectStandardStream(streamFD, with: redirected)
+        }
+        self.files = files
+        console = redirected == nil ? stream : nil
+    }
+
+    private static func protectStandardStream(_ fd: Int32, with file: FileHandle) {
+        // CLI summaries and ArgumentParser diagnostics also use stdio directly.
+        // Give this process an append descriptor without changing the flags on
+        // the open file description shared with its parent.
+        guard fd == STDOUT_FILENO || fd == STDERR_FILENO else { return }
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0 && flags & O_APPEND == 0 else { return }
+        let descriptorFlags = fcntl(fd, F_GETFD)
+        guard descriptorFlags >= 0, dup2(file.fileDescriptor, fd) == fd else {
+            os_log("Cannot enable append on redirected console", type: .error)
+            return
+        }
+        if descriptorFlags != 0 && fcntl(fd, F_SETFD, descriptorFlags) == -1 {
+            os_log("Cannot restore redirected console descriptor flags", type: .error)
+        }
+    }
+
+    // Append mode and file identity checks contributed by Jacques Vidrine (@fboundp) in #3.
+    private static func sameFile(_ lhs: Int32, _ rhs: Int32) -> Bool {
+        var file = stat()
+        var stream = stat()
+        return fstat(lhs, &file) == 0 && fstat(rhs, &stream) == 0
+            && file.st_dev == stream.st_dev && file.st_ino == stream.st_ino
+    }
+}
+
 /// Thread-safe logger with os_log integration and configurable output
 final class Logger: @unchecked Sendable {
     static let shared = Logger()
@@ -73,12 +119,8 @@ final class Logger: @unchecked Sendable {
     private var _useColors: Bool
     private var _quiet: Bool = false
 
-    // File logging
-    private let logDir: String
-    private let stdoutLogPath: String
-    private let stderrLogPath: String
-    private var stdoutFileHandle: FileHandle?
-    private var stderrFileHandle: FileHandle?
+    private let output: LogOutput
+    private let errorOutput: LogOutput
 
     var level: LogLevel {
         get { lock.withLock { _level } }
@@ -100,45 +142,37 @@ final class Logger: @unchecked Sendable {
         set { lock.withLock { _quiet = newValue } }
     }
 
-    private init() {
+    init(
+        logDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/ics-calendar-sync", isDirectory: true),
+        standardOutput: UnsafeMutablePointer<FILE> = stdout,
+        standardError: UnsafeMutablePointer<FILE> = stderr
+    ) {
         self.osLog = OSLog(subsystem: "com.ics-calendar-sync", category: "general")
-        self._useColors = isatty(STDOUT_FILENO) != 0
+        self._useColors = isatty(fileno(standardOutput)) != 0
 
-        // Setup log file paths
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        self.logDir = "\(home)/Library/Logs/ics-calendar-sync"
-        self.stdoutLogPath = "\(logDir)/stdout.log"
-        self.stderrLogPath = "\(logDir)/stderr.log"
-
-        // Create log directory and files
-        setupLogFiles()
+        do {
+            try FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        } catch {
+            os_log("Cannot create log directory: %{public}@", type: .error, error.localizedDescription)
+        }
+        let out = Self.openLogFile(logDirectory.appendingPathComponent("stdout.log"))
+        let err = Self.openLogFile(logDirectory.appendingPathComponent("stderr.log"))
+        output = LogOutput(file: out, otherFile: err, stream: standardOutput)
+        errorOutput = LogOutput(file: err, otherFile: out, stream: standardError)
     }
 
-    private func setupLogFiles() {
-        let fm = FileManager.default
-
-        // Create log directory if needed
-        if !fm.fileExists(atPath: logDir) {
-            try? fm.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+    private static func openLogFile(_ url: URL) -> FileHandle? {
+        var fd: Int32
+        repeat {
+            fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0o644)
+        } while fd == -1 && errno == EINTR
+        guard fd >= 0 else {
+            let reason = String(cString: strerror(errno))
+            os_log("Cannot open %{public}@: %{public}@", type: .error, url.path, reason)
+            return nil
         }
-
-        // Create log files if needed
-        if !fm.fileExists(atPath: stdoutLogPath) {
-            fm.createFile(atPath: stdoutLogPath, contents: nil)
-        }
-        if !fm.fileExists(atPath: stderrLogPath) {
-            fm.createFile(atPath: stderrLogPath, contents: nil)
-        }
-
-        // Open file handles for appending
-        if let handle = FileHandle(forWritingAtPath: stdoutLogPath) {
-            handle.seekToEndOfFile()
-            self.stdoutFileHandle = handle
-        }
-        if let handle = FileHandle(forWritingAtPath: stderrLogPath) {
-            handle.seekToEndOfFile()
-            self.stderrFileHandle = handle
-        }
+        return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
     }
 
     // MARK: - Logging Methods
@@ -168,59 +202,41 @@ final class Logger: @unchecked Sendable {
         // Log to os_log
         os_log("%{public}@", log: osLog, type: level.osLogType, message)
 
-        // Format for console (with colors)
-        let consoleOutput: String
+        let destination = level == .error ? errorOutput : output
         switch format {
         case .text:
-            consoleOutput = formatText(level: level, message: message, file: file, line: line, useColors: useColors)
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+            let location = level == .debug ? "[\((file as NSString).lastPathComponent):\(line)] " : ""
+            func render(_ prefix: String) -> String { "[\(timestamp)] \(prefix) \(location)\(message)" }
+            let colored = useColors && destination.console != nil
+                ? render("\(level.colorCode)\(level.prefix)\u{001B}[0m")
+                : nil
+            writeLine(render(level.prefix), consoleText: colored, to: destination)
         case .json:
-            consoleOutput = formatJSON(level: level, message: message, file: file, function: function, line: line)
-        }
-
-        // Format for file (without colors)
-        let fileOutput: String
-        switch format {
-        case .text:
-            fileOutput = formatText(level: level, message: message, file: file, line: line, useColors: false)
-        case .json:
-            fileOutput = formatJSON(level: level, message: message, file: file, function: function, line: line)
-        }
-
-        // Write to console
-        let stream: UnsafeMutablePointer<FILE> = level == .error ? stderr : stdout
-        fputs(consoleOutput + "\n", stream)
-        fflush(stream)
-
-        // Write to log file
-        lock.withLock {
-            if let data = (fileOutput + "\n").data(using: .utf8) {
-                if level == .error {
-                    stderrFileHandle?.write(data)
-                    try? stderrFileHandle?.synchronize()
-                } else {
-                    stdoutFileHandle?.write(data)
-                    try? stdoutFileHandle?.synchronize()
-                }
-            }
+            writeLine(formatJSON(level: level, message: message, file: file, function: function, line: line), to: destination)
         }
     }
 
-    private func formatText(level: LogLevel, message: String, file: String, line: Int, useColors: Bool) -> String {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        let fileName = (file as NSString).lastPathComponent
-
-        let reset = "\u{001B}[0m"
-        let levelStr: String
-        if useColors {
-            levelStr = "\(level.colorCode)\(level.prefix)\(reset)"
-        } else {
-            levelStr = level.prefix
-        }
-
-        if level == .debug {
-            return "[\(timestamp)] \(levelStr) [\(fileName):\(line)] \(message)"
-        } else {
-            return "[\(timestamp)] \(levelStr) \(message)"
+    private func writeLine(_ text: String, consoleText: String? = nil, to destination: LogOutput) {
+        let record = Data((text + "\n").utf8)
+        lock.withLock {
+            for file in destination.files {
+                do {
+                    try file.write(contentsOf: record)
+                    try file.synchronize()
+                } catch {
+                    os_log("Cannot write log: %{public}@", log: osLog, type: .error, error.localizedDescription)
+                }
+            }
+            if let stream = destination.console {
+                let data = consoleText.map { Data(($0 + "\n").utf8) } ?? record
+                let count = data.withUnsafeBytes { bytes in
+                    fwrite(bytes.baseAddress!, 1, bytes.count, stream)
+                }
+                if fflush(stream) != 0 || count != data.count {
+                    os_log("Cannot write console log", log: osLog, type: .error)
+                }
+            }
         }
     }
 
@@ -262,49 +278,26 @@ extension Logger {
     /// Log a separator line
     func separator() {
         guard !quiet else { return }
-        let line = String(repeating: "-", count: 60)
-        print(line)
-        writeToFile(line + "\n", isError: false)
+        writeLine(String(repeating: "-", count: 60), to: output)
     }
 
     /// Log progress with spinner-like indicator
     func progress(_ message: String) {
         guard !quiet else { return }
-        let output = "  → \(message)"
-        print(output)
-        fflush(stdout)
-        writeToFile(output + "\n", isError: false)
+        writeLine("  → \(message)", to: output)
     }
 
     /// Log success with checkmark
     func success(_ message: String) {
         guard !quiet else { return }
-        let check = useColors ? "\u{001B}[32m✓\u{001B}[0m" : "✓"
-        print("  \(check) \(message)")
-        writeToFile("  ✓ \(message)\n", isError: false)
+        let colored = useColors ? "  \u{001B}[32m✓\u{001B}[0m \(message)" : nil
+        writeLine("  ✓ \(message)", consoleText: colored, to: output)
     }
 
     /// Log failure with X
     func failure(_ message: String) {
-        let x = useColors ? "\u{001B}[31m✗\u{001B}[0m" : "✗"
-        fputs("  \(x) \(message)\n", stderr)
-        fflush(stderr)
-        writeToFile("  ✗ \(message)\n", isError: true)
-    }
-
-    /// Write directly to log file
-    private func writeToFile(_ text: String, isError: Bool) {
-        lock.withLock {
-            if let data = text.data(using: .utf8) {
-                if isError {
-                    stderrFileHandle?.write(data)
-                    try? stderrFileHandle?.synchronize()
-                } else {
-                    stdoutFileHandle?.write(data)
-                    try? stdoutFileHandle?.synchronize()
-                }
-            }
-        }
+        let colored = useColors ? "  \u{001B}[31m✗\u{001B}[0m \(message)" : nil
+        writeLine("  ✗ \(message)", consoleText: colored, to: errorOutput)
     }
 }
 

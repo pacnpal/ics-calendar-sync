@@ -523,6 +523,13 @@ tail -f ~/Library/Logs/ics-calendar-sync/stdout.log
 ics-calendar-sync uninstall
 ```
 
+Daemon, CLI, and GUI-started syncs append each log record to `stdout.log` or
+`stderr.log`. Concurrent processes can interleave records, and timestamps can
+therefore appear out of order. `ics-calendar-sync logs --clear` clears both
+files in place so running writers and `tail -f` continue using the same files.
+If an external tool renames a log, existing writers keep writing to the renamed
+file until they reopen it.
+
 ## How It Works
 
 ### Delta Sync Algorithm

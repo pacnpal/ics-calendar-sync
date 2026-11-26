@@ -849,24 +849,12 @@ struct LogsCommand: AsyncParsableCommand {
         global.configureLogger()
         let logger = Logger.shared
 
-        // Ensure log directory exists
-        let fm = FileManager.default
-        if !fm.fileExists(atPath: logDir) {
-            try fm.createDirectory(atPath: logDir, withIntermediateDirectories: true)
-            logger.info("Created log directory: \(logDir)")
-        }
-
-        // Ensure log files exist
-        if !fm.fileExists(atPath: stdoutPath) {
-            fm.createFile(atPath: stdoutPath, contents: nil)
-        }
-        if !fm.fileExists(atPath: stderrPath) {
-            fm.createFile(atPath: stderrPath, contents: nil)
-        }
+        // Surface setup errors for the logs command even though sync can run with console logging alone.
+        try FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
 
         // Handle clear flag
         if clear {
-            try clearLogs()
+            try Self.clearLogs(in: logDir)
             logger.success("Logs cleared")
             if !follow {
                 return
@@ -884,14 +872,16 @@ struct LogsCommand: AsyncParsableCommand {
         }
     }
 
-    private func clearLogs() throws {
-        let fm = FileManager.default
-
-        if fm.fileExists(atPath: stdoutPath) {
-            try "".write(toFile: stdoutPath, atomically: true, encoding: .utf8)
-        }
-        if fm.fileExists(atPath: stderrPath) {
-            try "".write(toFile: stderrPath, atomically: true, encoding: .utf8)
+    static func clearLogs(in directory: String) throws {
+        // Keep the inode used by running loggers, launchd and tail -f.
+        for name in ["stdout.log", "stderr.log"] {
+            let path = "\(directory)/\(name)"
+            if Darwin.truncate(path, 0) != 0 {
+                let code = errno
+                if code != ENOENT {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [NSFilePathErrorKey: path])
+                }
+            }
         }
     }
 
