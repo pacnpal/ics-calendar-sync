@@ -36,7 +36,7 @@ enum EventMapper {
 
         // Alarms
         if config.syncAlarms {
-            ekEvent.alarms = icsEvent.alarms.compactMap { mapAlarm($0) }
+            ekEvent.alarms = icsEvent.alarms.map { mapAlarm($0, eventDuration: icsEvent.duration) }
         }
 
         // Availability (transparency)
@@ -85,7 +85,7 @@ enum EventMapper {
             recurrenceRule: ekEvent.recurrenceRules?.first.map { RecurrenceMapper.toRRule($0) },
             exceptionDates: [],
             recurrenceDates: [],
-            alarms: ekEvent.alarms?.compactMap { mapEKAlarm($0) } ?? [],
+            alarms: ekEvent.alarms?.map(mapEKAlarm) ?? [],
             status: mapEKStatus(ekEvent.status),
             transparency: mapEKAvailability(ekEvent.availability),
             organizer: ekEvent.organizer.map { ICSOrganizer(name: $0.name, email: nil) },
@@ -159,30 +159,22 @@ enum EventMapper {
         return notes
     }
 
-    private static func mapAlarm(_ alarm: ICSAlarm) -> EKAlarm? {
-        // EKAlarm uses negative offset for before event
-        let offset = alarm.trigger
-
-        // Only support relative alarms to start
-        if alarm.triggerRelation == .start {
-            return EKAlarm(relativeOffset: offset)
-        } else {
-            // For end-relative, we'd need event duration - not directly supported
-            // Fall back to start-relative
-            return EKAlarm(relativeOffset: offset)
+    private static func mapAlarm(_ alarm: ICSAlarm, eventDuration: TimeInterval) -> EKAlarm {
+        if let date = alarm.absoluteDate {
+            return EKAlarm(absoluteDate: date)
         }
+
+        // EventKit measures offsets from the start, including for all-day events.
+        let offset = alarm.triggerRelation == .end ? eventDuration + alarm.trigger : alarm.trigger
+        return EKAlarm(relativeOffset: offset)
     }
 
-    private static func mapEKAlarm(_ alarm: EKAlarm) -> ICSAlarm? {
-        guard alarm.relativeOffset != 0 || alarm.absoluteDate == nil else {
-            return nil
-        }
-
-        return ICSAlarm(
+    private static func mapEKAlarm(_ alarm: EKAlarm) -> ICSAlarm {
+        ICSAlarm(
             action: .display,
-            trigger: alarm.relativeOffset,
+            trigger: alarm.absoluteDate == nil ? alarm.relativeOffset : 0,
             triggerRelation: .start,
-            description: nil
+            absoluteDate: alarm.absoluteDate
         )
     }
 

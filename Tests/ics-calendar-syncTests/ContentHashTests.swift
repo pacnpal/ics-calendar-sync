@@ -77,6 +77,43 @@ final class ContentHashTests: XCTestCase {
         XCTAssertNotEqual(hash1, hash2)
     }
 
+    func testLegacyAlarmHashes() {
+        var event = createTestEvent(startDate: Date(timeIntervalSince1970: 0))
+        XCTAssertEqual(ContentHash.calculate(for: event),
+                       "5a92dfbedb48e913305bbdc48ececadea651a223a5daea95ad6eeb52dd1b1f8b")
+
+        event.alarms = [ICSAlarm(action: .display, trigger: -900, triggerRelation: .start)]
+        XCTAssertEqual(ContentHash.calculate(for: event),
+                       "3a9c4db7a9671c12f69875c16159d38aa4d713e293f50bd2bba499dc78e6a73a")
+
+        // v2.1.0 retains source order when start-relative offsets tie.
+        event.alarms[0].description = "Z"
+        event.alarms.append(ICSAlarm(action: .audio, trigger: -900, triggerRelation: .start, description: "A"))
+        XCTAssertEqual(ContentHash.calculate(for: event),
+                       "a5fea800b1e88488cedeb1fb64244140ae38d69e6854bd7e09c96067a027ac20")
+    }
+
+    func testHashDistinguishesAlarmTimesAndAnchors() {
+        let start = Date(timeIntervalSince1970: 0)
+        var event = createTestEvent(startDate: start)
+        let alarms = [
+            ICSAlarm(action: .display, trigger: 0, triggerRelation: .start),
+            ICSAlarm(action: .display, trigger: 0, triggerRelation: .end),
+            ICSAlarm(action: .display, trigger: 0, triggerRelation: .start, absoluteDate: start),
+            ICSAlarm(action: .display, trigger: 0, triggerRelation: .start, absoluteDate: start.addingTimeInterval(1))
+        ]
+        let hashes = alarms.map { alarm in
+            event.alarms = [alarm]
+            return ContentHash.calculate(for: event)
+        }
+        XCTAssertEqual(Set(hashes).count, 4)
+
+        event.alarms = alarms
+        let hash = ContentHash.calculate(for: event)
+        event.alarms.reverse()
+        XCTAssertEqual(ContentHash.calculate(for: event), hash)
+    }
+
     // MARK: - Hash Format Tests
 
     func testHashIsHexString() {

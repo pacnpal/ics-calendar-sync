@@ -301,6 +301,65 @@ final class ICSParserTests: XCTestCase {
         XCTAssertEqual(events[0].alarms[0].trigger, -15 * 60) // -15 minutes in seconds
     }
 
+    // Fixed-time alarm reproduction from Jacques Vidrine (fboundp), issue #4.
+    func testMixedAlarmTriggers() async throws {
+        let triggers = [
+            "TRIGGER;X-LABEL=\"a:b\";value=\"date-time\":20240115T171100Z",
+            "TRIGGER;VALUE=DURATION;related=\"end\":-PT5M",
+            "TRIGGER;X-LABEL=\"a:b;RELATED=END\":+PT15M",
+            "TRIGGER;RELATED=START:PT1H2M3S",
+            "TRIGGER:-P2W",
+            "TRIGGER:PT0S"
+        ]
+        let event = try await parseAlarmEvent(triggers)
+        XCTAssertEqual(event.alarms.count, 6)
+        let absolute = try XCTUnwrap(event.alarms.first)
+        XCTAssertEqual(absolute.absoluteDate, Date(timeIntervalSince1970: 1_705_338_660))
+        XCTAssertEqual(absolute.description, "Reminder")
+        let relative = event.alarms.dropFirst()
+        XCTAssertTrue(relative.allSatisfy { $0.absoluteDate == nil })
+        XCTAssertEqual(relative.map(\.trigger), [-300, 900, 3723, -1209600, 0])
+        XCTAssertEqual(relative.map(\.triggerRelation), [.end, .start, .start, .start, .start])
+    }
+
+    func testInvalidTriggersSkipOnlyTheirAlarm() async throws {
+        let triggers = [
+            "TRIGGER;VALUE=DATE-TIME:20240115T171100",
+            "TRIGGER;VALUE=DATE-TIME:20240230T171100Z",
+            "TRIGGER;VALUE=DATE-TIME:20240115T251100Z",
+            "TRIGGER;VALUE=DATE:20240115",
+            "TRIGGER:20240115T171100Z",
+            "TRIGGER:PT",
+            "TRIGGER:--PT15M",
+            "TRIGGER:PT15Mgarbage",
+            "TRIGGER:PT0S"
+        ]
+        let event = try await parseAlarmEvent(triggers)
+        XCTAssertEqual(event.alarms.map(\.trigger), [0])
+        XCTAssertNil(event.alarms.first?.absoluteDate)
+    }
+
+    private func parseAlarmEvent(_ triggers: [String]) async throws -> ICSEvent {
+        let alarms = triggers.map { trigger in
+            """
+            BEGIN:VALARM
+            ACTION:DISPLAY
+            DESCRIPTION:Reminder
+            \(trigger)
+            END:VALARM
+            """
+        }.joined(separator: "\n")
+        let events = try await ICSParser().parse("""
+        BEGIN:VEVENT
+        UID:absolute-alarm@example.com
+        DTSTART:20240120T160000Z
+        DURATION:PT1H
+        \(alarms)
+        END:VEVENT
+        """)
+        return try XCTUnwrap(events.first)
+    }
+
     // MARK: - Duration Tests
 
     func testParseEventWithDuration() async throws {
